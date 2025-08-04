@@ -22,6 +22,7 @@ Example:
 
 import os
 import sys
+import importlib
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -64,7 +65,7 @@ def load_catalog_and_corrections():
     
     # Load the main galaxy catalog from parquet format
     # This catalog contains multi-band photometry and derived galaxy properties
-    catalog = pd.read_parquet('../../carpenter/data/MDR1_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
+    catalog = pd.read_parquet(importlib.resources.files("carpenter").joinpath(f"../..//data/MDR1_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet"))
     
     # Set up indexing: convert Merian object IDs to standardized format
     # The original objectId_Merian values are converted to 'M<number>' format
