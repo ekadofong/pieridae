@@ -302,11 +302,7 @@ def create_continuum_subtracted_images(bbmb, catalog, targetid, n540_fcont, n708
         excess_bbmb.image[band] = excess_image
         excess_bbmb.var[band] = excess_variance
         excess_bbmb.bands.append(band)
-    
-    # Clean up any artifacts from the continuum subtraction
-    # This removes negative flux regions that are clearly non-physical
-    excess_bbmb.clean_nonexcess_sources()
-    
+ 
     print("Continuum subtraction complete!")
     return excess_bbmb
 
@@ -436,7 +432,8 @@ def process_single_target(targetid, dirname='../local_data/MDR1_starbursts/',
         
         # Step 3: Convert target ID back to coordinate-based filename
         # The catalog uses standardized M* IDs, but files use J-coordinate names
-        target_name = conventions.merianobjectname_to_catalogname(targetid, catalog)
+        row = catalog.loc[targetid]
+        target_name = conventions.produce_merianobjectname(row.RA,row.DEC)
         
         # Step 4: Load multi-band cutout images
         bbmb = load_target_images(target_name, catalog, targetid, dirname)
@@ -450,7 +447,7 @@ def process_single_target(targetid, dirname='../local_data/MDR1_starbursts/',
         
         print(f"\n✓ Successfully processed {targetid}")
         
-    except Exception as e:
+    except KeyboardInterrupt as e:
         print(f"\n✗ Error processing {targetid}: {str(e)}")
         import traceback
         traceback.print_exc()
