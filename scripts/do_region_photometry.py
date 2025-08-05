@@ -326,9 +326,12 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
         
         # Save photometry catalogs
         for band in ['n540', 'n708']:
-            if emission_bundle.get(band, [None])[0] is not None:
-                cat, _, total_flux, integrated_flux_corrected, model_obj, _ = emission_bundle[band]
-                
+            # Get emission bundle data for this band
+            bundle_data = emission_bundle.get(band, [None, None, np.nan*u.erg/u.s/u.cm**2, np.nan, None, None])
+            cat, _, total_flux, integrated_flux_corrected, model_obj, _ = bundle_data
+            
+            if cat is not None:
+                # Model sources were detected - save full photometry table
                 # Convert to astropy table and add corrected flux
                 phot_table = cat.to_table()
                 phot_table['lineflux_corrected'] = integrated_flux_corrected                
@@ -371,6 +374,29 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
                     format='csv',
                     overwrite=True
                 )
+            else:
+                # No model sources detected - save only integrated photometry with labels -1 and -2
+                if not np.isnan(total_flux):
+                    from astropy.table import Table
+                    
+                    # Create table with integrated photometry rows
+                    phot_table = Table()
+                    phot_table['label'] = [-1, -2]
+                    phot_table['lineflux_corrected'] = [total_flux, total_flux]
+                    phot_table['band'] = [band, band]
+                    phot_table['target'] = [target, target]
+                    
+                    # Add empty model columns for consistency
+                    phot_table['model_lineflux'] = [0., 0.]
+                    phot_table['model_integral'] = [0., 0.]
+                    phot_table['model_amplitude'] = [0., 0.]
+                    
+                    # Save to CSV
+                    phot_table.write(
+                        os.path.join(target_output_dir, f"{targetid}_{band}_region_photometry.csv"),
+                        format='csv',
+                        overwrite=True
+                    )
         
         print(f"Successfully processed {targetid}")
         
