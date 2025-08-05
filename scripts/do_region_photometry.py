@@ -129,22 +129,29 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
                     threshold=5.*sampling.sigmaclipped_std(bbmb.image[band], low=4., high=3.),
                     npixels=5,
                     connectivity=8
-                )
+            )
             #total_segm_deblend = deblend_sources(total_detimage, total_segm,
             #                    npixels=10, nlevels=32, contrast=0.001,
             #                    progress_bar=False)
-            total_cat = SourceCatalog(excess_bbmb.image[band], total_segm)
+            if total_segm is None:
+                print(f'No sources detected in {targetid} cutout!')
+                emission_bundle[band] = (None, None, np.nan*u.erg/u.s/u.cm**2, np.nan, None, None)
+                continue                   
             sid = total_segm.data[total_detimage.shape[0]//2, total_detimage.shape[1]//2]
             if sid == 0:
                 print(f'No source detected in _detection_ band for {targetid}')
                 emission_bundle[band] = (None, None, np.nan*u.erg/u.s/u.cm**2, np.nan, None, None)
-                continue                
+                continue   
+            
+            total_cat = SourceCatalog(excess_bbmb.image[band], total_segm)   
+            bb_cat = SourceCatalog(bbmb.matched_image['r'], total_segm)          
             catindex = total_segm.get_index(sid)
             
             total_flux = emission.excess_to_lineflux(total_cat.kron_flux[catindex]  * conversion *u.nJy, band)
             total_flux *= extinction_correction[0][targetindex,correction_indices[band]] * ge_correction[targetindex,correction_indices[band]]
             if band == 'n708':
                 total_flux *= ancline_correction[targetindex]   
+            total_bbflux = bb_cat.kron_flux[catindex] * conversion
                             
             # Segment image for source detection
             detimage = excess_bbmb.image[band] - np.nanmedian(excess_bbmb.image[band])
@@ -223,14 +230,16 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
                             origin='lower')
             else:
                 ek.imshow(excess_bbmb.image[model_band], q=0.01, ax=axarr[adx,1])
-            for ax in axarr[adx]:
-                ek.contour(
-                    total_segm,
-                    levels=[0,1],
-                    ax=ax,
-                    linestyles='--',
-                    colors='lightgrey'
-                )
+            
+            if total_segm is not None:
+                for ax in axarr[adx]:
+                    ek.contour(
+                        total_segm,
+                        levels=[0,1],
+                        ax=ax,
+                        linestyles='--',
+                        colors='lightgrey'
+                    )
 
         ek.text(0.025, 0.975, r'N708 (H$\alpha$)', ax=axarr[0,0], color='w', size=13)
         ek.text(0.025, 0.975, r'N540 ([OIII]5007)', ax=axarr[1,0], color='w', size=13)        
@@ -260,7 +269,7 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
                     _ = ek.running_quantile(
                         catalog.loc[is_good, 'logmass'],
                         catalog.loc[is_good, key],
-                        bins=20,
+                        bins=np.linspace(7.6,9.6,20),
                         std_format='fill_between',
                         color='r',
                         ax=axarr[adx],
@@ -309,12 +318,12 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
                         label='Catalog - Brightest Region'
                     )                    
 
-                axarr[adx].axvline(np.log10(2.7)+9., color='k', ls='--', alpha=0.7, label='LMC M*')
-                axarr[adx].axvline(np.log10(3.1)+8., color='k', ls='--', alpha=0.7, label='SMC M*')
+                #axarr[adx].axvline(np.log10(2.7)+9., color='k', ls='--', alpha=0.7, label='LMC M*')
+                #axarr[adx].axvline(np.log10(3.1)+8., color='k', ls='--', alpha=0.7, label='SMC M*')
                 axarr[adx].set_ylim(3e38, 2e41)
                 axarr[adx].set_xlabel('log M* [M☉]')
                 axarr[adx].set_ylabel(f'{key} [erg/s]')
-                axarr[adx].legend(fontsize=10)
+                axarr[adx].legend(fontsize=7)
                 
             except IOError as e:
                 print(f"Error creating SFS plot for {key}: {e}")
@@ -362,10 +371,17 @@ def process_target(target, catalog, dirname, output_dir, emission_corrections):
                 
                 integrated_row = {
                     'label':-1,
-                    'lineflux_corrected':total_flux,
+                    'lineflux_corrected':total_flux,                    
                     'band':band,
                     'target':target
                 }
+                phot_table.add_row(integrated_row)
+                integrated_row = {
+                    'label':-2,
+                    'kron_flux':total_bbflux,
+                    'band':'r',
+                    'target':target
+                }                
                 phot_table.add_row(integrated_row)
                 
                 # Save to CSV
@@ -490,18 +506,18 @@ def main():
     catalog['pz'] = catalog['pz1']+catalog['pz2']+catalog['pz3']+catalog['pz4']
     
     # Define selection criteria
-    is_mcmass = (catalog['logmass'] > 8.) & (catalog['logmass'] < 9.7) & (catalog['i_apercorr'] < 4.) & (catalog['n540_apercorr'] < 4.)
-    is_emitter = (catalog['haew'] > 5.) & (catalog['oiiiew'] > 5.)
-    in_band = (catalog['z_spec'] > 0.05) & (catalog['z_spec'] < 0.11)
-    zphot_select = catalog['pz'] > 0.26
+    is_mcmass = (catalog['logmass']>7.75)&(catalog['logmass']<9.4)&(catalog['i_apercorr']<4.)&(catalog['n540_apercorr']<4.)
+    is_emitter = (catalog['haew']>5.)&(catalog['oiiiew']>5.)
+    in_band = (catalog['z_spec']>0.05)&(catalog['z_spec']<0.11)
+    zphot_select = catalog['pz']>0.26
     is_good = is_mcmass & zphot_select & is_emitter
     
     has_zspec = np.isfinite(catalog['z_spec'])
     in_band[~has_zspec] = np.nan
     
     # Set up directories
-    dirname = '../local_data/MDR1_starbursts/'
-    output_dir = '../local_data/pieridae_output/MDR1_starbursts/'
+    dirname = '../local_data/MDR1_mcmasses/'
+    output_dir = '../local_data/pieridae_output/MDR1_mcmasses/'
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
