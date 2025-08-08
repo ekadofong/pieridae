@@ -795,15 +795,15 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
             else:
                 ek.imshow(excess_bbmb.image[model_band], q=0.01, ax=axarr[adx,1])
             
-            if total_segm is not None:
-                for ax in axarr[adx]:
-                    ek.contour(
-                        total_segm,
-                        levels=[0,1],
-                        ax=ax,
-                        linestyles='--',
-                        colors='lightgrey'
-                    )
+            #if total_segm is not None:
+            #    for ax in axarr[adx]:
+            #        ek.contour(
+            #            total_segm,
+            #            levels=[0,1],
+            #            ax=ax,
+            #            linestyles='--',
+            #            colors='lightgrey'
+            #        )
 
         ek.text(0.025, 0.975, r'N708 (H$\alpha$) - MCMC Model', ax=axarr[0,0], color='w', size=13)
         ek.text(0.025, 0.975, r'N540 ([OIII]5007) - MCMC Model', ax=axarr[1,0], color='w', size=13)        
@@ -815,6 +815,12 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
         plt.tight_layout()
         plt.savefig(os.path.join(target_output_dir, f"{targetid}_mcmc_model.png"), dpi=150, bbox_inches='tight')
         plt.close()
+        
+        for band in ['n708','n540']:
+            np.save(
+                os.path.join(target_output_dir, f"{targetid}_{band}_arr.npy"),
+                excess_bbmb.image[model_band]
+            )
         
         # Save photometry catalogs with MCMC model fluxes
         for band in ['n540', 'n708']:

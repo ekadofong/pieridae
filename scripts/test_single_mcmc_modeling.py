@@ -29,7 +29,7 @@ import importlib.util
 
 # Import the MCMC modeling module
 import merian_mcmc_modeling as mcmc_mod
-from agrias import utils
+from agrias import utils, photometry
 from carpenter import emission, conventions
 
 
@@ -66,7 +66,7 @@ def load_catalog_and_corrections():
     print("Computing continuum flux estimates...")
     
     # N708 continuum
-    n708_fluxes, n708_luminosities, n708_eqws, n708_fcont = agrias.photometry.mbestimate_halpha(
+    n708_fluxes, n708_luminosities, n708_eqws, n708_fcont = photometry.mbestimate_halpha(
         catalog[utils.photcols['N708']].values,
         catalog[utils.photcols['g']].values,
         catalog[utils.photcols['r']].values,
@@ -91,7 +91,7 @@ def load_catalog_and_corrections():
     )
     
     # N540 continuum
-    n540_fluxes, n540_luminosities, n540_eqws, n540_fcont = agrias.photometry.mbestimate_halpha(
+    n540_fluxes, n540_luminosities, n540_eqws, n540_fcont = photometry.mbestimate_halpha(
         catalog[utils.photcols['N540']].values,
         catalog[utils.photcols['g']].values,
         catalog[utils.photcols['r']].values,
@@ -152,7 +152,7 @@ def find_target_file(targetid, catalog, dirname):
         return None
 
 
-def process_single_target(targetid, dirname='../local_data/MDR1_mcmasses/', 
+def process_single_target(targetid, dirname='../local_data/MDR1_starbursts_specz/', 
                          output_dir='../local_data/pieridae_output/single_mcmc_test/'):
     """
     Process a single target with MCMC modeling
