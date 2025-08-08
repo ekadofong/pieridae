@@ -43,6 +43,31 @@ from ekfphys import calibrations
 from ekfstats import fit, sampling
 
 
+def detect_peaks(image: np.ndarray, psf, min_distance: int = 3, threshold_rel: float = 10.,
+                bkg_std: float = 0.01) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Detect peaks and estimate flux (adapted from mcmc_point_sources.py)"""
+    local_max = maximum_filter(image, size=min_distance) == image
+    threshold = threshold_rel * bkg_std
+    peaks_mask = local_max & (image > threshold)
+    
+    y_coords, x_coords = np.where(peaks_mask)
+    
+    if len(x_coords) == 0:
+        return np.array([]), np.array([]), np.array([])
+    
+    # Flux estimation using PSF normalization
+    peak_fluxes = image[y_coords, x_coords]
+    flux_estimates = peak_fluxes * np.pi * psf.gamma**2 / (psf.alpha - 1.)
+    
+    sort_idx = np.argsort(flux_estimates)[::-1]
+    
+    x_peaks = x_coords[sort_idx].astype(np.float32)
+    y_peaks = y_coords[sort_idx].astype(np.float32) 
+    flux_peaks = flux_estimates[sort_idx].astype(np.float32)
+    
+    return x_peaks, y_peaks, flux_peaks
+
+
 class MoffatPSF:
     """
     Moffat PSF model using astropy Moffat2D parameterization
@@ -186,25 +211,24 @@ class MerianMCMCParameterization:
         self.H, self.W = image_shape
         self.psf_fwhm = psf_fwhm
         
-        # Parameter layout: [n_sources, x1, y1, flux1, x2, y2, flux2, ...]
+        # Parameter layout: [n_sources, x1, y1, log10_flux1, x2, y2, log10_flux2, ...]
         self.n_params = 1 + 3 * max_sources
         
         # Setup bounds
         self.bounds = self._setup_bounds()
     
     def _setup_bounds(self):
-        """Setup parameter bounds"""
+        """Setup parameter bounds (now only for n_sources)"""
         bounds = []
         
         # Number of sources
         bounds.append((0, self.max_sources))
         
-        # Source parameters - allow some buffer around image edges
-        buffer = 2.0
+        # Source parameters - no hard bounds, will use soft priors
         for i in range(self.max_sources):
-            bounds.append((-buffer, self.W - 1 + buffer))  # x position
-            bounds.append((-buffer, self.H - 1 + buffer))  # y position  
-            bounds.append((1e-6, 100.0))                   # flux (broad range for emission lines)
+            bounds.append((-np.inf, np.inf))    # x position (unbounded)
+            bounds.append((-np.inf, np.inf))    # y position (unbounded)
+            bounds.append((-np.inf, np.inf))    # log10_flux (unbounded)
         
         return np.array(bounds)
     
@@ -218,10 +242,10 @@ class MerianMCMCParameterization:
         # Extract active source parameters
         x_sources = params[1:1+3*n_sources:3]
         y_sources = params[2:2+3*n_sources:3] 
-        fluxes = params[3:3+3*n_sources:3]
+        log10_fluxes = params[3:3+3*n_sources:3]
         
-        # Ensure positive fluxes
-        fluxes = np.abs(fluxes)
+        # Convert log10_flux back to flux
+        fluxes = 10**log10_fluxes
         
         return n_sources, x_sources, y_sources, fluxes
     
@@ -271,18 +295,18 @@ class MerianMCMCParameterization:
                         
                         initial_params[i, 1 + j*3] = catalog.xcentroid[j] + jitter_x
                         initial_params[i, 2 + j*3] = catalog.ycentroid[j] + jitter_y
-                        initial_params[i, 3 + j*3] = catalog.kron_flux[j] * jitter_flux
+                        initial_params[i, 3 + j*3] = np.log10(np.maximum(catalog.kron_flux[j] * jitter_flux, 1e-6))
                     else:
                         # Random initialization for extra sources
                         initial_params[i, 1 + j*3] = np.random.uniform(0, self.W - 1)
                         initial_params[i, 2 + j*3] = np.random.uniform(0, self.H - 1)
-                        initial_params[i, 3 + j*3] = np.random.gamma(2.0, 0.1)
+                        initial_params[i, 3 + j*3] = np.random.normal(0, 1.0)  # log10_flux
                 
                 # Fill unused parameters with random values to maintain diversity
                 for j in range(n_sources_walker, self.max_sources):
                     initial_params[i, 1 + j*3] = np.random.uniform(0, self.W - 1)
                     initial_params[i, 2 + j*3] = np.random.uniform(0, self.H - 1)
-                    initial_params[i, 3 + j*3] = np.random.gamma(1.0, 0.05)
+                    initial_params[i, 3 + j*3] = np.random.normal(0, 1.0)  # log10_flux
         else:
             # Random initialization
             print("Using random MCMC initialization")
@@ -305,16 +329,89 @@ class MerianMCMCParameterization:
             for j in range(self.max_sources):
                 initial_params[i, 1 + j*3] = np.random.uniform(0, self.W - 1)
                 initial_params[i, 2 + j*3] = np.random.uniform(0, self.H - 1) 
-                initial_params[i, 3 + j*3] = np.random.gamma(2.0, 0.1)
+                initial_params[i, 3 + j*3] = np.random.normal(0, 1.0)  # log10_flux
     
     def _enforce_bounds(self, params: np.ndarray) -> np.ndarray:
         """Enforce parameter bounds"""
         params_clipped = params.copy()
         
-        for i, (low, high) in enumerate(self.bounds):
-            params_clipped[:, i] = np.clip(params_clipped[:, i], low, high)
+        # Only enforce n_sources bounds
+        params_clipped[:, 0] = np.clip(params_clipped[:, 0], 0, self.max_sources)
         
         return params_clipped
+    
+    def initialize_from_peaks(self, image: np.ndarray, psf, n_walkers: int,
+                             bkg_std: float, find_peaks: bool = True) -> np.ndarray:
+        """
+        Initialize walker positions using detect_peaks from mcmc_point_sources.py
+        
+        Parameters:
+        -----------
+        image : np.ndarray
+            The observed image data
+        psf : MoffatPSF
+            PSF model object  
+        n_walkers : int
+            Number of MCMC walkers
+        bkg_std : float
+            Background standard deviation for peak detection
+        find_peaks : bool
+            Whether to use peak detection for initialization
+        
+        Returns:
+        --------
+        initial_params : np.ndarray, shape (n_walkers, n_params)
+            Initial parameter values for walkers
+        """
+        initial_params = np.zeros((n_walkers, self.n_params))
+        
+        if find_peaks:
+            # Detect peaks using the mcmc_point_sources method
+            x_peaks, y_peaks, flux_peaks = detect_peaks(image, psf, bkg_std=bkg_std)
+            n_detected = len(x_peaks)
+            jitter = 10
+            
+            if n_detected > 0:
+                print(f"Detected {n_detected} peaks for MCMC initialization")
+                
+                # Initialize around detected number of sources
+                n_init = min(n_detected, self.max_sources)
+                initial_params[:, 0] = np.clip(np.random.normal(n_init, 0.5, n_walkers), 1., self.max_sources)
+                
+                # Initialize source parameters with noise around detected peaks
+                for i in range(n_walkers):
+                    n_sources_walker = int(np.clip(np.round(initial_params[i, 0]), 0, self.max_sources))
+                    
+                    for j in range(n_sources_walker):
+                        if j < n_detected:
+                            # Use detected peak with substantial noise for diversity
+                            initial_params[i, 1 + j*3] = x_peaks[j] + np.random.normal(0, jitter)  # x
+                            initial_params[i, 2 + j*3] = y_peaks[j] + np.random.normal(0, jitter)  # y
+                            initial_params[i, 3 + j*3] = np.log10(np.maximum(flux_peaks[j], 1e-6)) + np.random.normal(0, 0.5)  # log10_flux                                                           
+                        else:
+                            # Random initialization for extra sources
+                            initial_params[i, 1 + j*3] = np.random.uniform(jitter, self.W - jitter)  # x
+                            initial_params[i, 2 + j*3] = np.random.uniform(jitter, self.H - jitter)  # y  
+                            initial_params[i, 3 + j*3] = np.log10(np.maximum(np.mean(flux_peaks), 1e-6)) + np.random.normal(0, 0.5)  # log10_flux
+                
+                    # Add noise to unused parameters to ensure diversity
+                    for j in range(n_sources_walker, self.max_sources):
+                        initial_params[i, 1 + j*3] = np.random.uniform(0, self.W - 1)  # x
+                        initial_params[i, 2 + j*3] = np.random.uniform(0, self.H - 1)  # y
+                        initial_params[i, 3 + j*3] = np.random.normal(0, 1.0)  # log10_flux
+                
+                print(f"Initialized MCMC with {n_init} sources from peaks")
+            else:
+                print("No peaks detected, using random MCMC initialization")
+                self._random_init(initial_params)
+        else:
+            print("Using random MCMC initialization")
+            self._random_init(initial_params)
+        
+        # Enforce bounds
+        initial_params = self._enforce_bounds(initial_params)
+        
+        return initial_params
 
 
 class MerianMCMCPosterior:
@@ -343,58 +440,108 @@ class MerianMCMCPosterior:
         self.gamma_beta = 5.0      # Rate parameter for flux prior
     
     def log_prior(self, params: np.ndarray) -> float:
-        """Compute log prior probability"""
-        n_sources, x_sources, y_sources, fluxes = self.parameterization.params_to_sources(params)
-        
-        # Check bounds
-        if not self._within_bounds(params):
-            return -np.inf
-        
-        log_prior = 0.0
-        
-        # Poisson prior on number of sources
-        if n_sources == 0:
-            log_prior += -self.poisson_lambda
-        else:
-            log_prior += (n_sources * np.log(self.poisson_lambda) - 
-                         self.poisson_lambda - special.loggamma(n_sources + 1))
-        
-        if n_sources > 0:
-            # Uniform priors on positions (implicitly handled by bounds)
-            log_prior += -n_sources * np.log(self.parameterization.H * self.parameterization.W)
+        """Compute log prior probability with sigmoid priors and safety checks"""
+        try:
+            n_sources, x_sources, y_sources, fluxes = self.parameterization.params_to_sources(params)
             
-            # Gamma prior on fluxes (favoring moderate flux values)
-            if np.any(fluxes <= 0):
+            # Check only n_sources bounds (hard constraint)
+            if not self._within_bounds(params):
                 return -np.inf
-            log_prior += np.sum((self.gamma_alpha - 1) * np.log(fluxes) - self.gamma_beta * fluxes)
+            
+            log_prior = 0.0
+            
+            # Poisson prior on number of sources
+            if n_sources == 0:
+                log_prior += -self.poisson_lambda
+            else:
+                log_prior += (n_sources * np.log(self.poisson_lambda) - 
+                             self.poisson_lambda - special.loggamma(n_sources + 1))
+            
+            if n_sources > 0:
+                # Sigmoid priors on positions - sharp falloff near image boundaries
+                def sigmoid_position_prior(pos, image_size, edge_width=2.0):
+                    """
+                    Sigmoid-based position prior with sharp boundaries
+                    
+                    Returns log prior that is:
+                    - ~0 for sources well inside image (minimal penalty)  
+                    - Rapidly decreasing as sources approach edges
+                    - Strongly negative for sources outside image
+                    """
+                    # Sigmoid transitions: penalty increases sharply within edge_width pixels of boundaries
+                    left_penalty = -np.log(1.0 + np.exp(-(pos - 0) / edge_width))
+                    right_penalty = -np.log(1.0 + np.exp(-(image_size - pos) / edge_width))
+                    return left_penalty + right_penalty
+                
+                # Apply sigmoid priors to positions
+                x_prior = np.sum([sigmoid_position_prior(x, self.parameterization.W, edge_width=2.0) for x in x_sources])
+                y_prior = np.sum([sigmoid_position_prior(y, self.parameterization.H, edge_width=2.0) for y in y_sources])
+                log_prior += x_prior + y_prior
+                
+                # Prior on log10_flux - extract from params directly
+                log10_fluxes = params[3:3+3*n_sources:3]
+                # Wide normal prior on log10_flux: mean=0 (flux=1), std=2.5 (covers broad astronomical range)
+                log_prior += np.sum(-0.5 * (log10_fluxes / 2.5)**2)
+                log_prior += -n_sources * np.log(2.5 * np.sqrt(2 * np.pi))
+            
+            # Check for invalid values
+            if not np.isfinite(log_prior):
+                return -np.inf
+                
+            return log_prior
         
-        return log_prior
+        except (ValueError, FloatingPointError, OverflowError):
+            return -np.inf
     
     def log_likelihood(self, params: np.ndarray) -> float:
-        """Compute log likelihood"""
-        n_sources, x_sources, y_sources, fluxes = self.parameterization.params_to_sources(params)
-        return self.forward_model.log_likelihood(x_sources, y_sources, fluxes)
+        """Compute log likelihood with safety checks"""
+        try:
+            n_sources, x_sources, y_sources, fluxes = self.parameterization.params_to_sources(params)
+            
+            # Check for invalid parameter values
+            if n_sources > 0:
+                if not (np.all(np.isfinite(x_sources)) and 
+                        np.all(np.isfinite(y_sources)) and 
+                        np.all(np.isfinite(fluxes)) and
+                        np.all(fluxes > 0)):
+                    return -np.inf
+            
+            log_like = self.forward_model.log_likelihood(x_sources, y_sources, fluxes)
+            
+            # Check result is finite
+            if not np.isfinite(log_like):
+                return -np.inf
+                
+            return log_like
+            
+        except (ValueError, FloatingPointError, OverflowError):
+            return -np.inf
     
     def log_posterior(self, params: np.ndarray) -> float:
-        """Compute log posterior probability"""
+        """Compute log posterior probability with safety checks"""
         log_prior = self.log_prior(params)
+        
+        # If prior is invalid, don't compute likelihood
         if not np.isfinite(log_prior):
             return -np.inf
         
         log_like = self.log_likelihood(params)
-        if not np.isfinite(log_like):
-            return -np.inf
         
-        return log_prior + log_like
+        # Check final result
+        log_post = log_prior + log_like
+        if not np.isfinite(log_post):
+            return -np.inf
+            
+        return log_post
     
     def _within_bounds(self, params: np.ndarray) -> bool:
-        """Check if parameters are within bounds"""
-        bounds = self.parameterization.bounds
-        return np.all((params >= bounds[:, 0]) & (params <= bounds[:, 1]))
+        """Check if parameters are within bounds (only n_sources now)"""
+        # Only check n_sources bounds - positions and log10_flux are unbounded with soft priors
+        return 0 <= params[0] <= self.parameterization.max_sources
 
 
-def run_merian_mcmc(image: np.ndarray, variance: np.ndarray, catalog: SourceCatalog,
-                    psf_fwhm: float, max_sources: int = 5, n_walkers: int = 50, 
+def run_merian_mcmc(image: np.ndarray, variance: np.ndarray, psf: MoffatPSF, 
+                    max_sources: int = 5, n_walkers: int = 50, 
                     n_steps: int = 2000, burn_in: int = 500) -> Tuple[emcee.EnsembleSampler, MerianMCMCParameterization, MerianPointSourceModel]:
     """
     Run MCMC sampling for Merian emission line data
@@ -405,10 +552,8 @@ def run_merian_mcmc(image: np.ndarray, variance: np.ndarray, catalog: SourceCata
         Observed emission line image
     variance : np.ndarray  
         Variance map
-    catalog : SourceCatalog
-        Detected sources from photutils
-    psf_fwhm : float
-        PSF FWHM in pixels
+    psf : MoffatPSF
+        PSF model object to use for forward modeling
     max_sources : int
         Maximum number of sources to fit
     n_walkers : int
@@ -429,23 +574,21 @@ def run_merian_mcmc(image: np.ndarray, variance: np.ndarray, catalog: SourceCata
     """
     print(f"Running MCMC for emission line modeling...")
     print(f"Image shape: {image.shape}")
-    print(f"PSF FWHM: {psf_fwhm:.2f} pixels")
+    print(f"PSF gamma: {psf.gamma:.2f}, alpha: {psf.alpha}")
     print(f"Max sources: {max_sources}")
     
-    # Setup PSF model with gamma derived from FWHM
-    # FWHM = 2 * gamma * sqrt(2^(1/alpha) - 1) for Moffat
-    # For alpha=2.5: gamma = FWHM / (2 * sqrt(2^(1/2.5) - 1))
-    gamma = psf_fwhm / (2.0 * np.sqrt(2**(1/2.5) - 1))
-    psf = MoffatPSF(gamma=gamma, alpha=2.5)
-    
-    # Setup components
+    # Setup components using provided PSF
     forward_model = MerianPointSourceModel(psf, image, variance)
+    # Calculate FWHM from PSF gamma for parameterization
+    psf_fwhm = psf.gamma * 2.0 * np.sqrt(2**(1/psf.alpha) - 1)
     parameterization = MerianMCMCParameterization(max_sources, image.shape, psf_fwhm)
     posterior = MerianMCMCPosterior(forward_model, parameterization)
     
-    # Initialize walkers
+    # Initialize walkers using peak detection from image
     print(f"Initializing {n_walkers} walkers...")
-    initial_positions = parameterization.initialize_from_catalog(catalog, n_walkers)
+    # Estimate background noise for peak detection
+    bkg_std = np.sqrt(np.nanmedian(variance))
+    initial_positions = parameterization.initialize_from_peaks(image, psf, n_walkers, bkg_std)
     
     # Setup sampler
     sampler = emcee.EnsembleSampler(
@@ -720,12 +863,17 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
             # This replaces: model_obj, model_pred = fit.fit_multi_moffat_2d(...)
             print(f"Running MCMC modeling for {band} band...")
             
+            # Create PSF object for this band
+            # FWHM = 2 * gamma * sqrt(2^(1/alpha) - 1) for Moffat
+            # For alpha=2.5: gamma = FWHM / (2 * sqrt(2^(1/2.5) - 1))
+            gamma = bbmb.fwhm_to_match / (2.0 * np.sqrt(2**(1/2.5) - 1))
+            psf = MoffatPSF(gamma=gamma, alpha=2.5)
+            
             # Run MCMC modeling
             sampler, parameterization, forward_model = run_merian_mcmc(
                 excess_bbmb.image[band],
                 excess_bbmb.var[band], 
-                cat,
-                bbmb.fwhm_to_match,
+                psf,
                 max_sources=min(len(cat) + 2, 5),  # Reasonable max based on detections
                 n_walkers=32,
                 n_steps=1000,
