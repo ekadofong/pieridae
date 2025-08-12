@@ -276,6 +276,9 @@ def main():
     print(f"\n{'='*60}")
     print("MCMC modeling test complete!")
     print("Check the output directory for results and QA figures.")
+    print(f'[Output directory:] ')
+    stem = '/scratch/gpfs/MERIAN/user/kadofong/pixel_excess_local_data'
+    print(f'{stem}/pieridae_output/single_mcmc_test/{targetid}/{targetid}_mcmc_model.png')
     print(f"{'='*60}")
 
 

@@ -300,13 +300,13 @@ class MerianMCMCParameterization:
                         # Random initialization for extra sources
                         initial_params[i, 1 + j*3] = np.random.uniform(0, self.W - 1)
                         initial_params[i, 2 + j*3] = np.random.uniform(0, self.H - 1)
-                        initial_params[i, 3 + j*3] = np.random.normal(0, 1.0)  # log10_flux
+                        initial_params[i, 3 + j*3] = np.random.normal(0, 2.0)  # log10_flux
                 
                 # Fill unused parameters with random values to maintain diversity
                 for j in range(n_sources_walker, self.max_sources):
                     initial_params[i, 1 + j*3] = np.random.uniform(0, self.W - 1)
                     initial_params[i, 2 + j*3] = np.random.uniform(0, self.H - 1)
-                    initial_params[i, 3 + j*3] = np.random.normal(0, 1.0)  # log10_flux
+                    initial_params[i, 3 + j*3] = np.random.normal(0, 2.0)  # log10_flux
         else:
             # Random initialization
             print("Using random MCMC initialization")
@@ -541,7 +541,7 @@ class MerianMCMCPosterior:
 
 
 def run_merian_mcmc(image: np.ndarray, variance: np.ndarray, psf: MoffatPSF, 
-                    max_sources: int = 5, n_walkers: int = 50, 
+                    max_sources: int = 5, n_walkers: int = 32, 
                     n_steps: int = 2000, burn_in: int = 500) -> Tuple[emcee.EnsembleSampler, MerianMCMCParameterization, MerianPointSourceModel]:
     """
     Run MCMC sampling for Merian emission line data
@@ -596,7 +596,6 @@ def run_merian_mcmc(image: np.ndarray, variance: np.ndarray, psf: MoffatPSF,
         parameterization.n_params,
         posterior.log_posterior
     )
-    
     print(f"Running burn-in: {burn_in} steps...")
     state = sampler.run_mcmc(initial_positions, burn_in, progress=True)
     sampler.reset()
@@ -866,16 +865,18 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
             # Create PSF object for this band
             # FWHM = 2 * gamma * sqrt(2^(1/alpha) - 1) for Moffat
             # For alpha=2.5: gamma = FWHM / (2 * sqrt(2^(1/2.5) - 1))
-            gamma = bbmb.fwhm_to_match / (2.0 * np.sqrt(2**(1/2.5) - 1))
-            psf = MoffatPSF(gamma=gamma, alpha=2.5)
+            alpha = bbmb.psf_matching_params['alpha']
+            #gamma = bbmb.fwhm_to_match / (2.0 * np.sqrt(2**(1/2.5) - 1))
+            gamma = bbmb.psf_matching_params['gamma']
+            psf = MoffatPSF(gamma=gamma, alpha=alpha)
             
             # Run MCMC modeling
             sampler, parameterization, forward_model = run_merian_mcmc(
                 excess_bbmb.image[band],
                 excess_bbmb.var[band], 
                 psf,
-                max_sources=min(len(cat) + 2, 5),  # Reasonable max based on detections
-                n_walkers=32,
+                max_sources=10,  # Reasonable max based on detections
+                n_walkers=128,
                 n_steps=1000,
                 burn_in=200
             )
@@ -930,7 +931,7 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
             _, _, _, _ , _, model_pred = emission_bundle[model_band] if len(emission_bundle[model_band]) > 3 else (None, None, None, None, None, None)
             
             if model_pred is not None:
-                alpha = 1e-4
+                alpha = 1e-3
                 lim = np.nanquantile(model_pred,1.-alpha)
                 axarr[adx,1].imshow(excess_bbmb.image[model_band], 
                                 vmin=-lim, vmax=lim, origin='lower')
@@ -1168,12 +1169,18 @@ def main():
     zphot_select = catalog['pz']>0.26
     is_good = is_mcmass & zphot_select & is_emitter
     
+    z = 0.08
+    alpha = -0.13*z + 0.8
+    sfr0 = 1.24*z - 1.47
+    sigma = 0.22*z + 0.38
+    is_starburst = catalog['L_Ha'] > calibrations.SFR2LHa(10.**(alpha * (catalog['logmass'] - 8.5) + sfr0 + 1.5*sigma))
+    
     has_zspec = np.isfinite(catalog['z_spec'])
     in_band[~has_zspec] = np.nan
     
     # Set up directories
     dirname = '../local_data/MDR1_mcmasses/'
-    output_dir = '../local_data/pieridae_output/MDR1_mcmasses_mcmc/'
+    output_dir = '../local_data/pieridae_output/MDR1_mcmasses/'
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
