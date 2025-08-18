@@ -152,7 +152,7 @@ def find_target_file(targetid, catalog, dirname):
         return None
 
 
-def process_single_target(targetid, dirname='../local_data/MDR1_starbursts_specz/', 
+def process_single_target(targetid, dirname='../local_data/MDR1_mcmasses/', 
                          output_dir='../local_data/pieridae_output/single_mcmc_test/'):
     """
     Process a single target with MCMC modeling
@@ -201,7 +201,8 @@ def process_single_target(targetid, dirname='../local_data/MDR1_starbursts_specz
         
         # Step 5: Run MCMC processing
         print("Starting MCMC processing...")
-        mcmc_mod.process_target_mcmc(target_name, catalog, dirname, output_dir, emission_corrections)
+        mcmc_mod.process_target_mcmc(target_name, catalog, dirname, output_dir, emission_corrections, 
+                                     rgb_bands=(['i','n708','r'], ['r','n540','g']))
         
         print(f"\n✓ Successfully processed {targetid} with MCMC modeling")
         
