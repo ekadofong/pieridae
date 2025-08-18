@@ -733,7 +733,7 @@ def get_available_targets(dirname):
     return sorted(list(set(targets)))
 
 
-def process_target_mcmc(target, catalog, dirname, output_dir, emission_corrections):
+def process_target_mcmc(target, catalog, dirname, output_dir, emission_corrections, rgb_bands=None):
     """
     Process a single target with MCMC modeling instead of traditional fitting
     
@@ -745,6 +745,9 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
         print(f"Target {targetid} not found in catalog, skipping...")
         return   
     print(f"Processing target with MCMC: {targetid}") 
+    
+    if rgb_bands is None:
+        rgb_bands = ['i','r','g']
     
     # Create output directory for this target
     target_output_dir = os.path.join(output_dir, targetid)
@@ -770,7 +773,7 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
             bbmb.add_band(
                 band,
                 coordinates.SkyCoord(catalog.loc[targetid, 'RA'], catalog.loc[targetid, 'DEC'], unit='deg'),
-                size=100,
+                size=200,
                 image=cutout,
                 var=cutout,
                 psf=psf,
@@ -913,15 +916,33 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
         
         # RGB image
         try:
-            rgb_img = make_lupton_rgb(
-                bbmb.matched_image['i'],
-                bbmb.matched_image['r'],
-                bbmb.matched_image['g'],
-                stretch=1.,
-                Q=3
-            )
-            ek.imshow(rgb_img, ax=axarr[0,0])
-            ek.imshow(rgb_img, ax=axarr[1,0])
+            if len(rgb_bands) == 2:
+                rgb_img_n708 = make_lupton_rgb(
+                    bbmb.matched_image[rgb_bands[0][0]],
+                    bbmb.matched_image[rgb_bands[0][1]],
+                    bbmb.matched_image[rgb_bands[0][2]],
+                    stretch=3.,
+                    Q=5
+                )
+                rgb_img_n540 = make_lupton_rgb(
+                    bbmb.matched_image[rgb_bands[1][0]],
+                    bbmb.matched_image[rgb_bands[1][1]],
+                    bbmb.matched_image[rgb_bands[1][2]],
+                    stretch=3.,
+                    Q=5
+                )
+                ek.imshow(rgb_img_n708, ax=axarr[0,0])
+                ek.imshow(rgb_img_n540, ax=axarr[1,0])                 
+            else:
+                rgb_img = make_lupton_rgb(
+                    bbmb.matched_image[rgb_bands[0]],
+                    bbmb.matched_image[rgb_bands[1]],
+                    bbmb.matched_image[rgb_bands[2]],
+                    stretch=3.,
+                    Q=5
+                )                               
+                ek.imshow(rgb_img, ax=axarr[0,0])
+                ek.imshow(rgb_img, ax=axarr[1,0])
         except:
             axarr[0,0].text(0.5, 0.5, 'RGB Failed', ha='center', va='center', transform=axarr[0].transAxes)
             axarr[1,0].text(0.5, 0.5, 'RGB Failed', ha='center', va='center', transform=axarr[0].transAxes)
@@ -1079,7 +1100,7 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
         traceback.print_exc()
 
 
-def main():
+def main(dirname, output_dir):
     """Main function - same structure as do_region_photometry.py but with MCMC"""
     print("Loading catalog and computing emission corrections...")
     catalog = pd.read_parquet('../../carpenter/data/MDR1_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
@@ -1179,8 +1200,7 @@ def main():
     in_band[~has_zspec] = np.nan
     
     # Set up directories
-    dirname = '../local_data/MDR1_mcmasses/'
-    output_dir = '../local_data/pieridae_output/MDR1_mcmasses/'
+   
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -1198,4 +1218,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    dirname = '../local_data/DESIagn_BPTseyfert/'
+    output_dir = '../local_data/pieridae_output/DESIagn_BPTseyfert/'
+    main(dirname, output_dir)
