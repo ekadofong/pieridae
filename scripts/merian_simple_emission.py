@@ -56,7 +56,7 @@ def get_available_targets(dirname):
     return sorted(list(set(targets)))
 
 
-def process_target_simple_emission(target, catalog, dirname, output_dir, emission_corrections):
+def process_target_simple_emission(target, catalog, dirname, output_dir, emission_corrections, rgb_bands=None):
     """
     Process a single target to generate RGB and emission line images only
     
@@ -69,8 +69,11 @@ def process_target_simple_emission(target, catalog, dirname, output_dir, emissio
         return   
     print(f"Processing target for simple emission visualization: {targetid}") 
     
+    if rgb_bands is None:
+        rgb_bands=[('i','n708','r'),('r','n540','g')]
+    
     # Create output directory for this target
-    target_output_dir = os.path.join(output_dir, targetid)
+    target_output_dir = output_dir
     os.makedirs(target_output_dir, exist_ok=True)
     
     try:
@@ -93,7 +96,7 @@ def process_target_simple_emission(target, catalog, dirname, output_dir, emissio
             bbmb.add_band(
                 band,
                 coordinates.SkyCoord(catalog.loc[targetid, 'RA'], catalog.loc[targetid, 'DEC'], unit='deg'),
-                size=100,
+                size=150,
                 image=cutout,
                 var=cutout,
                 psf=psf,
@@ -109,12 +112,12 @@ def process_target_simple_emission(target, catalog, dirname, output_dir, emissio
         for band in ['n540', 'n708']:
             fwhm_a, _ = bbmb.measure_psfsizes()
             mim, mpsf = bbmb.match_psfs(refband=band)
-            excess_bbmb.image[band], excess_bbmb.var[band] = bbmb.compute_mbexcess(
+            excess_bbmb.image[band], excess_bbmb.var[band], _ = bbmb.compute_mbexcess(
                 band,
                 psf_matched=True,
-                method='single',
-                scaling_band='z',
-                scaling_factor=fcs[band][targetindex].value / catalog.loc[targetid, utils.photcols['z']],
+                method='2dpowerlaw',
+                #scaling_band='z',
+                #scaling_factor=fcs[band][targetindex].value / catalog.loc[targetid, utils.photcols['z']],
             )
             excess_bbmb.bands.append(band)
         
@@ -125,15 +128,33 @@ def process_target_simple_emission(target, catalog, dirname, output_dir, emissio
         
         # RGB image (left column for both rows)
         try:
-            rgb_img = make_lupton_rgb(
-                bbmb.matched_image['i'],
-                bbmb.matched_image['r'],
-                bbmb.matched_image['g'],
-                stretch=1.,
-                Q=3
-            )
-            ek.imshow(rgb_img, ax=axarr[0,0])
-            ek.imshow(rgb_img, ax=axarr[1,0])
+            if len(rgb_bands) == 2:
+                rgb_img_n708 = make_lupton_rgb(
+                    bbmb.matched_image[rgb_bands[0][0]],
+                    bbmb.matched_image[rgb_bands[0][1]],
+                    bbmb.matched_image[rgb_bands[0][2]],
+                    stretch=3.,
+                    Q=5
+                )
+                rgb_img_n540 = make_lupton_rgb(
+                    bbmb.matched_image[rgb_bands[1][0]],
+                    bbmb.matched_image[rgb_bands[1][1]],
+                    bbmb.matched_image[rgb_bands[1][2]],
+                    stretch=3.,
+                    Q=5
+                )
+                ek.imshow(rgb_img_n708, ax=axarr[0,0])
+                ek.imshow(rgb_img_n540, ax=axarr[1,0])                 
+            else:
+                rgb_img = make_lupton_rgb(
+                    bbmb.matched_image[rgb_bands[0]],
+                    bbmb.matched_image[rgb_bands[1]],
+                    bbmb.matched_image[rgb_bands[2]],
+                    stretch=3.,
+                    Q=5
+                )                               
+                ek.imshow(rgb_img, ax=axarr[0,0])
+                ek.imshow(rgb_img, ax=axarr[1,0])
         except:
             axarr[0,0].text(0.5, 0.5, 'RGB Failed', ha='center', va='center', transform=axarr[0,0].transAxes)
             axarr[1,0].text(0.5, 0.5, 'RGB Failed', ha='center', va='center', transform=axarr[1,0].transAxes)
@@ -155,16 +176,18 @@ def process_target_simple_emission(target, catalog, dirname, output_dir, emissio
         axarr[1,1].set_title('N540 Excess')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(target_output_dir, f"{targetid}_simple_emission.png"), dpi=150, bbox_inches='tight')
+        save_file = os.path.join(target_output_dir, f"{targetid}_simple_emission.png")
+        print(save_file)
+        plt.savefig(save_file, dpi=150, bbox_inches='tight')
         plt.close()
         
         # Save emission line arrays
-        for band in ['n708','n540']:
-            if band in excess_bbmb.bands:
-                np.save(
-                    os.path.join(target_output_dir, f"{targetid}_{band}_emission_arr.npy"),
-                    excess_bbmb.image[band]
-                )
+        #for band in ['n708','n540']:
+        #    if band in excess_bbmb.bands:
+        #        np.save(
+        #            os.path.join(target_output_dir, f"{targetid}_{band}_emission_arr.npy"),
+        #            excess_bbmb.image[band]
+        #        )
         
         print(f"Successfully processed {targetid} - simple emission visualization saved")
         
@@ -178,9 +201,7 @@ def main(dirname, output_dir):
     """Main function - simplified version without MCMC"""
     print("Loading catalog and computing emission corrections...")
     catalog = pd.read_parquet('../../carpenter/data/MDR1_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
-    catalog = catalog.set_index('objectId_Merian')
-    catalog.index = [f'M{sidx}' for sidx in catalog.index]
-    
+    catalog = catalog.rename({'coord_ra_Merian':'RA','coord_dec_Merian':"DEC"},axis=1)
     # Estimate AV
     av, u_av = emission.estimate_av(catalog)
     catalog['AV'] = av
@@ -257,23 +278,6 @@ def main(dirname, output_dir):
     catalog['lineratio'] = catalog.loc[:, 'L_OIII']/catalog.loc[:, 'L_Ha']
     catalog['pz'] = catalog['pz1']+catalog['pz2']+catalog['pz3']+catalog['pz4']
     
-    # Define selection criteria
-    is_mcmass = (catalog['logmass']>7.75)&(catalog['logmass']<9.4)&(catalog['i_apercorr']<4.)&(catalog['n540_apercorr']<4.)
-    is_emitter = (catalog['haew']>5.)&(catalog['oiiiew']>5.)
-    in_band = (catalog['z_spec']>0.05)&(catalog['z_spec']<0.11)
-    zphot_select = catalog['pz']>0.26
-    is_good = is_mcmass & zphot_select & is_emitter
-    
-    z = 0.08
-    alpha = -0.13*z + 0.8
-    sfr0 = 1.24*z - 1.47
-    sigma = 0.22*z + 0.38
-    is_starburst = catalog['L_Ha'] > calibrations.SFR2LHa(10.**(alpha * (catalog['logmass'] - 8.5) + sfr0 + 1.5*sigma))
-    
-    has_zspec = np.isfinite(catalog['z_spec'])
-    in_band[~has_zspec] = np.nan
-
-    
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
@@ -283,6 +287,8 @@ def main(dirname, output_dir):
     
     # Process each target
     for i, target in enumerate(targets):
+        if not target == 'J092918.41+002813.17':
+            continue
         print(f"Processing target {i+1}/{len(targets)}: {target}")
         process_target_simple_emission(target, catalog, dirname, output_dir, emission_corrections)
     
@@ -291,6 +297,6 @@ def main(dirname, output_dir):
 
 if __name__ == "__main__":    
     # Set up directories
-    dirname = '../local_data/DESIagn_BPTseyfert/'
-    output_dir = '../local_data/pieridae_output/DESIagn_BPTseyfert_simple/'    
-    main()
+    dirname = '../local_data/MDR1_starbursts_specz/'
+    output_dir = '../local_data/pieridae_output/MDR1_starbursts_specz_simple/'    
+    main(dirname, output_dir)

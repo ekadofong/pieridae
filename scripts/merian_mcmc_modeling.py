@@ -789,12 +789,13 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
         for band in ['n540', 'n708']:
             fwhm_a, _ = bbmb.measure_psfsizes()
             mim, mpsf = bbmb.match_psfs(refband=band)
-            excess_bbmb.image[band], excess_bbmb.var[band] = bbmb.compute_mbexcess(
+            excess_bbmb.image[band], excess_bbmb.var[band], _ = bbmb.compute_mbexcess(
                 band,
                 psf_matched=True,
-                method='single',
-                scaling_band='z',
-                scaling_factor=fcs[band][targetindex].value / catalog.loc[targetid, utils.photcols['z']],
+                method='2dpowerlaw',
+                #method='single',
+                #scaling_band='z',
+                #scaling_factor=fcs[band][targetindex].value / catalog.loc[targetid, utils.photcols['z']],
             )
             excess_bbmb.bands.append(band)
         
@@ -983,7 +984,8 @@ def process_target_mcmc(target, catalog, dirname, output_dir, emission_correctio
         axarr[0,3].set_title('Residual')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(target_output_dir, f"{targetid}_mcmc_model.png"), dpi=150, bbox_inches='tight')
+        save_filetype='pdf'
+        plt.savefig(os.path.join(target_output_dir, f"{targetid}_mcmc_model.{save_filetype}"), dpi=150, bbox_inches='tight')
         plt.close()
         
         for band in ['n708','n540']:
@@ -1212,12 +1214,12 @@ def main(dirname, output_dir):
     # Process each target with MCMC
     for i, target in enumerate(targets):
         print(f"Processing target {i+1}/{len(targets)}: {target}")
-        process_target_mcmc(target, catalog, dirname, output_dir, emission_corrections)
+        process_target_mcmc(target, catalog, dirname, output_dir, emission_corrections, rgb_bands=(['i','n708','r'], ['r','n540','g']))
     
     print("MCMC processing complete!")
 
 
 if __name__ == "__main__":
-    dirname = '../local_data/DESIagn_BPTseyfert/'
-    output_dir = '../local_data/pieridae_output/DESIagn_BPTseyfert/'
+    dirname = '../local_data/MDR1_starbursts_specz/'
+    output_dir = '../local_data/pieridae_output/MDR1_starbursts_2dpowerlaw/'
     main(dirname, output_dir)

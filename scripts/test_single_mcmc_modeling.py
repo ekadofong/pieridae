@@ -152,7 +152,7 @@ def find_target_file(targetid, catalog, dirname):
         return None
 
 
-def process_single_target(targetid, dirname='../local_data/MDR1_mcmasses/', 
+def process_single_target(targetid, dirname='../local_data/MDR1_starbursts_specz/', 
                          output_dir='../local_data/pieridae_output/single_mcmc_test/'):
     """
     Process a single target with MCMC modeling
@@ -279,7 +279,7 @@ def main():
     print("Check the output directory for results and QA figures.")
     print(f'[Output directory:] ')
     stem = '/scratch/gpfs/MERIAN/user/kadofong/pixel_excess_local_data'
-    print(f'{stem}/pieridae_output/single_mcmc_test/{targetid}/{targetid}_mcmc_model.png')
+    print(f'{stem}/pieridae_output/single_mcmc_test/{targetid}/{targetid}_mcmc_model.pdf')
     print(f"{'='*60}")
 
 
