@@ -110,33 +110,55 @@ def load_sample ():
     
     return catalog, masks
 
+def get_tree_nndist ( target_tree, neighbor_tree, rmin ):
+    dd, ii = neighbor_tree.query(target_tree.data, 10)
+    too_close = dd < rmin.to(u.deg).value
+    dd = np.where(too_close, np.nan, dd)
+    d2d = np.nanmin(dd, axis=1) * u.deg
+    d2d_phys = (d2d * cosmo.kpc_comoving_per_arcmin(0.08)).to(u.Mpc)
+    
+    # Get the index of the minimum valid distance for each target point
+    valid_idx = np.nanargmin(dd, axis=1)
+    # Get the corresponding neighbor indices
+    neighbor_idx = ii[np.arange(len(ii)), valid_idx]
+        
+    return neighbor_idx, d2d_phys
+    
 
-def mk_pairdistance ( catalog, masks ):
-    from astropy import coordinates 
+def mk_pairdistance ( catalog, masks,  ):
+    from scipy.spatial import cKDTree
+    
+    rmin = 30.*u.arcsec
     
     in_band = masks['in_band'][0]
     is_good = masks['is_good'][0]
     is_starburst = masks['is_starburst'][0]
+    is_massive = catalog.loc[:,'logmass'] > 10.
     
-    catcoords = coordinates.SkyCoord(catalog['RA'].values, catalog['DEC'].values, unit='deg')
-    
-    _, d2d_spec,_ = catcoords[in_band].match_to_catalog_sky(catcoords[in_band], 2)
-    d2d_spec_phys = (d2d_spec * cosmo.kpc_comoving_per_arcmin(0.08)).to(u.Mpc)
-    
-    _, d2d_all,_ = catcoords[is_good].match_to_catalog_sky(catcoords[is_good], 2)
-    d2d_all_phys = (d2d_all * cosmo.kpc_comoving_per_arcmin(0.08)).to(u.Mpc)
+    tree_all = cKDTree(catalog.loc[masks['is_good'][0],['RA','DEC']].values)
+    tree_massive_all = cKDTree(catalog.loc[masks['is_good'][0]&is_massive,['RA','DEC']].values)
+    tree_sb_all = cKDTree(catalog.loc[masks['is_good'][0]&masks['is_starburst'][0],['RA','DEC']].values)
+    tree_spec = cKDTree(catalog.loc[masks['in_band'][0],['RA','DEC']].values)
+    tree_massive_spec = cKDTree(catalog.loc[masks['in_band'][0]&is_massive,['RA','DEC']].values)
+    tree_sb_spec = cKDTree(catalog.loc[masks['in_band'][0]&is_starburst,['RA','DEC']].values)
+
+    _, d2d_spec_phys = get_tree_nndist ( tree_spec, tree_spec, rmin )
+    neighbor_index, d2d_sb_spec_phys = get_tree_nndist ( tree_sb_spec, tree_spec, rmin )
+
+    _, d2d_all_phys = get_tree_nndist ( tree_all, tree_all, rmin )
+    _, d2d_sb_all_phys = get_tree_nndist ( tree_sb_all, tree_all, rmin )
     
     conversion = cosmo.kpc_comoving_per_arcmin(0.08).to(u.Mpc/u.deg)
-    bins = np.linspace(0., 2.,30)
+    bins = np.linspace((rmin*conversion).to(u.Mpc).value, 1.,30)
     
     fig, axarr = plt.subplots(1,2,figsize=(10,4))
     ek.hist(d2d_spec_phys.value, density=True, lw=2, alpha=0.2, bins=bins, ax=axarr[0], color=normal_color.base, label='all Merian galaxies')
-    ek.hist(d2d_spec_phys[is_starburst[in_band]].value, density=True, lw=2, alpha=0.2, bins=bins, ax=axarr[0], 
+    ek.hist(d2d_sb_spec_phys.value, density=True, lw=2, alpha=0.2, bins=bins, ax=axarr[0], 
             color=starburst_color.base, label='Merian starbursts')
 
     #ek.hist(d2d_spec_phys.value, density=True, lw=2, histtype='step', color='grey', bins=bins, ax=axarr[1], ls='--')
     ek.hist(d2d_all_phys.value, density=True, lw=2, alpha=0.2, bins=bins, ax=axarr[1], color=normal_color.base, label='all Merian galaxies')
-    ek.hist(d2d_all_phys[is_starburst[is_good]].value, density=True, lw=2, alpha=0.2, bins=bins, ax=axarr[1], color=starburst_color.base,
+    ek.hist(d2d_sb_all_phys.value, density=True, lw=2, alpha=0.2, bins=bins, ax=axarr[1], color=starburst_color.base,
             label='Merian starbursts')    
     
     for ax in axarr:
@@ -146,3 +168,5 @@ def mk_pairdistance ( catalog, masks ):
     
     ek.text(0.95,0.95, 'spectroscopic sample', ax=axarr[0])
     ek.text(0.95,0.95, 'Merian emission sample', ax=axarr[1])
+    
+    return neighbor_index, d2d_sb_spec_phys

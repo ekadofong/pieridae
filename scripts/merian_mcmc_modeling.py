@@ -1220,6 +1220,6 @@ def main(dirname, output_dir):
 
 
 if __name__ == "__main__":
-    dirname = '../local_data/MDR1_starbursts_specz/'
-    output_dir = '../local_data/pieridae_output/MDR1_starbursts_2dpowerlaw/'
+    dirname = '../local_data/starbursts_v0/'
+    output_dir = '../local_data/pieridae_output/starbursts_v0/'
     main(dirname, output_dir)
