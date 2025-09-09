@@ -14,16 +14,20 @@ import glob
 import numpy as np
 import matplotlib.pyplot as plt
 import sep
+import argparse
+import pickle
 from scipy import ndimage
 from astropy import coordinates
 from astropy.io import fits
 from astropy.visualization import make_lupton_rgb
+from astropy import cosmology
 
 from ekfplot import plot as ek
-from ekfstats import imstats
+from ekfstats import imstats, fit
 from carpenter import pixels, conventions
 from pieridae.starbursts import sample
 
+cosmo = cosmology.FlatLambdaCDM(70.,0.3)
 
 def extract_target_name(filepath):
     """Extract target name from filepath."""
@@ -112,6 +116,8 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             segmentation_map=True
         )
         central_source = sources[sources.shape[0]//2, sources.shape[1]//2]
+        central_source = sources[sources.shape[0]//2, sources.shape[1]//2]
+        csource = np.where(sources==central_source, 1, 0)
         sources = np.where(sources == central_source, 0, sources)
         
         # Starlet wavelet transform
@@ -164,13 +170,15 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             hf_image, 
             1, 
             err=np.median(err_samples), 
+            deblend_cont=1.,
             segmentation_map=True
         )
-        
+        minarea = np.pi*(bbmb.measure_psfsizes()[0][np.in1d(bbmb.bands, 'i')])**2
         feature_cat, hsb_features = sep.extract(
             hf_image, 
             2, 
             err=np.median(err_samples), 
+            minarea=minarea,
             segmentation_map=True
         )
         
@@ -182,12 +190,43 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         
         features = ndimage.label(features)[0]
         
-        # Filter features by magnitude
-        rmag = -2.5 * np.log10(ndimage.sum_labels(bbmb.image['i'], features, np.unique(features)[1:])) + 27.
-        for ix in np.unique(features)[1:]:
-            if rmag[ix-1] > 100.:
-                features[features == ix] = 0
+        # \\ remove central object
+        cid = features[sources.shape[0]//2, sources.shape[1]//2]
+        if cid > 0:
+            features = np.where(features!=cid, features, 0)
+        features = ndimage.label(features)[0]
         
+        # \\ remove background red objects
+        findices = np.unique(features)[1:]
+        gr = -2.5*np.log10(
+            ndimage.sum(bbmb.image['g'], features, findices)/
+            ndimage.sum(bbmb.image['r'], features, findices)
+        )
+        ri = -2.5*np.log10(
+            ndimage.sum(bbmb.image['r'], features, findices)/
+            ndimage.sum(bbmb.image['i'], features, findices)
+        )
+        too_red = ri > (0.48*gr+0.2)
+        for ft in findices[too_red]:
+            features = np.where(features==ft, 0, features)
+        features = ndimage.label(features)[0]
+        
+        ridge_stats = []
+        for feat in np.arange(1,np.max(features)+1):
+            rout = fit.fit_ridgeline_image(
+                hf_image, 
+                features==feat, 
+                order=1, 
+                return_stats=False
+            )
+            # coefficients, predict_func, fitted_coordinates  = rout
+            ridge_stats.append(rout)
+        csersic, cim = fit.fit_sersic_2d(np.where(csource, bbmb.image['i'],0.))
+
+        rmag = -2.5*np.log10(csersic.luminosity) + 27.
+        rmag_catalog = -2.5*np.log10(catalog.loc[targetid,'r_cModelFlux_Merian']*1e-9/3631.)
+        absmag_r =  rmag - cosmo.distmod(0.08).value
+        logmstar_adjusted = 0.4*(rmag_catalog - rmag) + catalog.loc[targetid,'logmass']        
         # Generate 4-panel QA figure
         fig, axarr = plt.subplots(1, 4, figsize=(15, 4))
         
@@ -207,7 +246,28 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         # Panel 3: Sum of segmentation maps
         ek.imshow(hf_image, q=0.01, ax=axarr[3], cmap='Greys')
         ek.contour(features, ax=axarr[3], colors='r')
+
+        xs = np.arange(cim.shape[1])
+        ys = np.arctan(csersic.theta.value)*(xs-csersic.x_0.value) + csersic.y_0.value
+        ys = np.where((ys>0)&(ys<xs.max()), ys, np.nan)
+        #ek.outlined_plot(central_fitted_coordinates['x'], central_predict_func(central_fitted_coordinates['x']), color='b', lw=1)        
+        ek.outlined_plot(xs, ys, color='b', ls='--', lw=1, ax=axarr[3])
+        ek.contour(cim, colors='b', ax=axarr[3])
+        for rout in ridge_stats:
+            coefficients, predict_func, fitted_coordinates = rout
+            ek.outlined_plot(fitted_coordinates['x'], predict_func(fitted_coordinates['x']), color='r', lw=1, ax=axarr[3])
         
+        ek.text(
+            0.025,
+            0.975,
+            rf'''{targetid}
+({target})
+$\log_{{10}}(\rm M_\star/M_\odot) = {logmstar_adjusted:.2f}$
+''',
+            ax=axarr[0],
+            color='w',
+            fontsize=10
+        )
         # Remove axis ticks and add titles
         titles = ['RGB (i,N708,r)', 'i-band', 'High-freq + Features', 'Wavelet Segmaps']
         for ax, title in zip(axarr, titles):
@@ -223,10 +283,18 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         plt.close()
         print(f"Saved QA figure: {fig_path}")
         
-        # Save features array
-        features_path = os.path.join(target_output_dir, f"{targetid}_features.npy")
-        np.save(features_path, features)
-        print(f"Saved features array: {features_path}")
+        # Save results dictionary with feature map, coefficients, and Sersic parameters
+        results_dict = {
+            'feature_map': features,
+            'ridge_coefficients': [rout[0] for rout in ridge_stats],
+            'sersic_parameters': list(zip(csersic.param_names, csersic.parameters)),
+            'absmag_r':absmag_r,
+            'logmass_adjusted':logmstar_adjusted,
+        }
+        results_path = os.path.join(target_output_dir, f"{targetid}_results.pkl")
+        with open(results_path, 'wb') as f:
+            pickle.dump(results_dict, f)
+        print(f"Saved results dictionary: {results_path}")
         
         print(f"Successfully processed {targetid}")
         
@@ -235,6 +303,18 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         import traceback
         traceback.print_exc()
 
+def singleton (target, dirname, output_dir):
+    print("Loading catalog...")
+    catalog, masks = sample.load_sample(filename='../../local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
+    
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Process each target
+    print(f"Processing: {target}")
+    process_starlet_analysis(target, catalog, dirname, output_dir)
+    
+    print("Starlet analysis complete!")    
 
 def main(dirname, output_dir):
     """
@@ -266,6 +346,14 @@ def main(dirname, output_dir):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Starlet Wavelet Analysis for Merian Data')
+    parser.add_argument('-N', '--target', type=str, help='Process a single target (e.g., ABCDEF)')
+    args = parser.parse_args()
+    
     dirname = '../local_data/starbursts_v0/'
     output_dir = '../local_data/pieridae_output/starlet_starbursts_v0/'
-    main(dirname, output_dir)
+    
+    if args.target:
+        singleton(args.target, dirname, output_dir)
+    else:
+        main(dirname, output_dir)
