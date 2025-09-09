@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.spatial import cKDTree
 import pandas as pd
 from astropy import units as u
 from astropy import cosmology
@@ -9,13 +10,30 @@ from ekfphys import calibrations
 from carpenter import emission, conventions, pixels
 from agrias import photometry, utils
 
+
 cosmo = cosmology.FlatLambdaCDM(70.,0.3)
 starburst_color = ec.ColorBase('#1F8AE0')
 normal_color = ec.ColorBase('#787878')
 
+def get_tree_nndist ( target_tree, neighbor_tree, rmin ):
+    dd, ii = neighbor_tree.query(target_tree.data, 10)
+    too_close = dd < rmin.to(u.deg).value
+    dd = np.where(too_close, np.nan, dd)
+    d2d = np.nanmin(dd, axis=1) * u.deg
+    d2d_phys = (d2d * cosmo.kpc_comoving_per_arcmin(0.08)).to(u.Mpc)
+    
+    # Get the index of the minimum valid distance for each target point
+    valid_idx = np.nanargmin(dd, axis=1)
+    # Get the corresponding neighbor indices
+    neighbor_idx = ii[np.arange(len(ii)), valid_idx]
+        
+    return neighbor_idx, d2d_phys
+    
 
-def mk_pairdistance ( catalog, masks ):
-    from astropy import coordinates 
+def mk_pairdistance ( catalog, masks,  ):
+    from scipy.spatial import cKDTree
+    
+    rmin = 30.*u.arcsec
     
     in_band = masks['in_band'][0]
     is_good = masks['is_good'][0]
@@ -25,14 +43,16 @@ def mk_pairdistance ( catalog, masks ):
     tree_all = cKDTree(catalog.loc[masks['is_good'][0],['RA','DEC']].values)
     tree_massive_all = cKDTree(catalog.loc[masks['is_good'][0]&is_massive,['RA','DEC']].values)
     tree_sb_all = cKDTree(catalog.loc[masks['is_good'][0]&masks['is_starburst'][0],['RA','DEC']].values)
+    tree_norm_all = cKDTree(catalog.loc[masks['is_good'][0]&~masks['is_starburst'][0],['RA','DEC']].values)    
     tree_spec = cKDTree(catalog.loc[masks['in_band'][0],['RA','DEC']].values)
     tree_massive_spec = cKDTree(catalog.loc[masks['in_band'][0]&is_massive,['RA','DEC']].values)
     tree_sb_spec = cKDTree(catalog.loc[masks['in_band'][0]&is_starburst,['RA','DEC']].values)
+    tree_norm_spec = cKDTree(catalog.loc[masks['in_band'][0]&~is_starburst,['RA','DEC']].values)
 
-    _, d2d_spec_phys = get_tree_nndist ( tree_spec, tree_spec, rmin )
+    _, d2d_spec_phys = get_tree_nndist ( tree_norm_spec, tree_spec, rmin )
     neighbor_index, d2d_sb_spec_phys = get_tree_nndist ( tree_sb_spec, tree_spec, rmin )
 
-    _, d2d_all_phys = get_tree_nndist ( tree_all, tree_all, rmin )
+    _, d2d_all_phys = get_tree_nndist ( tree_norm_all, tree_all, rmin )
     _, d2d_sb_all_phys = get_tree_nndist ( tree_sb_all, tree_all, rmin )
     
     conversion = cosmo.kpc_comoving_per_arcmin(0.08).to(u.Mpc/u.deg)

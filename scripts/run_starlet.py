@@ -218,7 +218,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         plt.tight_layout()
         
         # Save figure
-        fig_path = os.path.join(target_output_dir, f"{targetid}_starlet_qa.pdf")
+        fig_path = os.path.join(target_output_dir, f"{targetid}_starlet_qa.png")
         plt.savefig(fig_path, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"Saved QA figure: {fig_path}")
@@ -248,7 +248,7 @@ def main(dirname, output_dir):
         Output directory for QA figures and features arrays
     """
     print("Loading catalog...")
-    catalog, masks = sample.load_sample(filename='../../local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
+    catalog, masks = sample.load_sample(filename='../../carpenter/data/MDR1_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -266,6 +266,6 @@ def main(dirname, output_dir):
 
 
 if __name__ == "__main__":
-    dirname = '../local_data/test_cutout/'
-    output_dir = '../local_data/pieridae_output/starlet_qa/'
+    dirname = '../local_data/starbursts_v0/'
+    output_dir = '../local_data/pieridae_output/starlet_starbursts_v0/'
     main(dirname, output_dir)
