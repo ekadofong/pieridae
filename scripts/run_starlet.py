@@ -351,7 +351,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     dirname = '../local_data/starbursts_v0/'
-    output_dir = '../local_data/pieridae_output/starlet_starbursts_v0/'
+    output_dir = '../local_data/pieridae_output/starlet/starbursts_v0/'
     
     if args.target:
         singleton(args.target, dirname, output_dir)
