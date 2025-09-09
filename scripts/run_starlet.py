@@ -17,7 +17,7 @@ import sep
 import argparse
 import pickle
 from scipy import ndimage
-from astropy import coordinates
+from astropy import coordinates, table
 from astropy.io import fits
 from astropy.visualization import make_lupton_rgb
 from astropy import cosmology
@@ -109,9 +109,10 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             )
         
         # Remove contaminating sources from i-band
-        _, sources = sep.extract(
+        source_cat, sources = sep.extract(
             bbmb.image['i'].byteswap().newbyteorder(), 
-            3, 
+            5,
+            deblend_cont=1., 
             var=bbmb.var['i'].byteswap().newbyteorder(), 
             segmentation_map=True
         )
@@ -122,7 +123,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         
         # Starlet wavelet transform
         use_gen2 = True
-        wt = imstats.starlet_transform(bbmb.image['i'], gen2=use_gen2)
+        wt = imstats.starlet_transform(np.where(sources==0, bbmb.image['i'], 0.), gen2=use_gen2)
         
         # Process each wavelet scale
         segmap_l = []
@@ -226,7 +227,10 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         rmag = -2.5*np.log10(csersic.luminosity) + 27.
         rmag_catalog = -2.5*np.log10(catalog.loc[targetid,'r_cModelFlux_Merian']*1e-9/3631.)
         absmag_r =  rmag - cosmo.distmod(0.08).value
-        logmstar_adjusted = 0.4*(rmag_catalog - rmag) + catalog.loc[targetid,'logmass']        
+            
+        rmag_seg = -2.5*np.log10(table.Table(source_cat)[central_source-1]['flux']) + 27.
+        logmstar_adjusted = 0.4*(rmag_catalog - rmag_seg) + catalog.loc[targetid,'logmass']
+    
         # Generate 4-panel QA figure
         fig, axarr = plt.subplots(1, 4, figsize=(15, 4))
         
@@ -348,10 +352,12 @@ def main(dirname, output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Starlet Wavelet Analysis for Merian Data')
     parser.add_argument('-N', '--target', type=str, help='Process a single target (e.g., ABCDEF)')
+    parser.add_argument('-D', '--data_dir', type=str, default='../local_data/starbursts_v0/' )
+    parser.add_argument('-O', '--output_dir', type=str, default='../local_data/pieridae_output/starlet/starbursts_v0/')
     args = parser.parse_args()
     
-    dirname = '../local_data/starbursts_v0/'
-    output_dir = '../local_data/pieridae_output/starlet/starbursts_v0/'
+    dirname = args.data_dir #'../local_data/starbursts_v0/'
+    output_dir = args.output_dir
     
     if args.target:
         singleton(args.target, dirname, output_dir)
