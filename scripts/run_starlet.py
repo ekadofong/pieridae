@@ -189,9 +189,26 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
                 features[lsb_features == ix] = 1
         
         features = ndimage.label(features)[0]
+        
+        # \\ remove central object
         cid = features[sources.shape[0]//2, sources.shape[1]//2]
         if cid > 0:
             features = np.where(features!=cid, features, 0)
+        features = ndimage.label(features)[0]
+        
+        # \\ remove background red objects
+        findices = np.unique(features)[1:]
+        gr = -2.5*np.log10(
+            ndimage.sum(bbmb.image['g'], features, findices)/
+            ndimage.sum(bbmb.image['r'], features, findices)
+        )
+        ri = -2.5*np.log10(
+            ndimage.sum(bbmb.image['r'], features, findices)/
+            ndimage.sum(bbmb.image['i'], features, findices)
+        )
+        too_red = ri > (0.48*gr+0.2)
+        for ft in findices[too_red]:
+            features = np.where(features==ft, 0, features)
         features = ndimage.label(features)[0]
         
         ridge_stats = []
@@ -232,7 +249,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
 
         xs = np.arange(cim.shape[1])
         ys = np.arctan(csersic.theta.value)*(xs-csersic.x_0.value) + csersic.y_0.value
-        
+        ys = np.where((ys>0)&(ys<xs.max()), ys, np.nan)
         #ek.outlined_plot(central_fitted_coordinates['x'], central_predict_func(central_fitted_coordinates['x']), color='b', lw=1)        
         ek.outlined_plot(xs, ys, color='b', ls='--', lw=1, ax=axarr[3])
         ek.contour(cim, colors='b', ax=axarr[3])
