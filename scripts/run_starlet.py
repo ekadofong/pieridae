@@ -217,6 +217,16 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             features = np.where(features==ft, 0, features)
         features = ndimage.label(features)[0]
         
+        # \\ remove detected features on the cutout edges
+        findices = np.unique(features)[1:]
+        com = np.array(ndimage.center_of_mass(bbmb.image['i'],features,findices)).reshape(-1,2)
+        if com.shape[0] > 0:
+            imshape = bbmb.image['i'].shape
+            rdist = np.sqrt((com[:,0] - imshape[1]//2)**2 + (com[:,1] - imshape[0]//2)**2)
+            for ft in findices[rdist>60]:
+                features = np.where(features==ft, 0, features)
+            features = ndimage.label(features)[0]
+        
         ridge_stats = []
         for feat in np.arange(1,np.max(features)+1):
             rout = fit.fit_ridgeline_image(
@@ -314,7 +324,7 @@ $\log_{{10}}(\rm M_\star/M_\odot) = {logmstar_adjusted:.2f}$
 
 def singleton (target, dirname, output_dir):
     print("Loading catalog...")
-    catalog, masks = sample.load_sample(filename='../../local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
+    catalog, masks = sample.load_sample()#filename='../../local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
