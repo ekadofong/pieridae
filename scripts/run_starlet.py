@@ -109,9 +109,10 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             )
         
         # Remove contaminating sources from i-band
+        vm = np.random.normal(0., bbmb.var['i']**0.5)
         source_cat, sources = sep.extract(
             bbmb.image['i'].byteswap().newbyteorder(), 
-            5,
+            3.,
             deblend_cont=1., 
             var=bbmb.var['i'].byteswap().newbyteorder(), 
             segmentation_map=True
@@ -123,7 +124,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         
         # Starlet wavelet transform
         use_gen2 = True
-        wt = imstats.starlet_transform(np.where(sources==0, bbmb.image['i'], 0.), gen2=use_gen2)
+        wt = imstats.starlet_transform(np.where(sources==0, bbmb.image['i'], vm), gen2=use_gen2)
         
         # Process each wavelet scale
         segmap_l = []
@@ -156,7 +157,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         im_recon = imstats.inverse_starlet_transform(im_recon, gen2=use_gen2)
         hf_image = bbmb.image['i'] - im_recon
         hf_image = hf_image - ndimage.median_filter(hf_image, size=20)
-        hf_image = np.where(sources > 0, 0, hf_image)
+        hf_image = np.where(sources > 0, vm, hf_image)
         
         # Estimate noise in high-frequency image
         err_samples = [
@@ -214,7 +215,9 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
         )
         too_red = ri > (0.48*gr+0.2)
         for ft in findices[too_red]:
+            hf_image = np.where(features==ft, vm, hf_image)
             features = np.where(features==ft, 0, features)
+            
         features = ndimage.label(features)[0]
         
         # \\ remove detected features on the cutout edges
@@ -321,6 +324,7 @@ $\log_{{10}}(\rm M_\star/M_\odot) = {logmstar_adjusted:.2f}$
         # Save results dictionary with feature map, coefficients, and Sersic parameters
         results_dict = {
             'feature_map': features,
+            'hf_image':hf_image,
             'ridge_coefficients': [rout[0] for rout in ridge_stats],
             'sersic_parameters': list(zip(csersic.param_names, csersic.parameters)),
             'absmag_r':absmag_r,
@@ -340,7 +344,11 @@ $\log_{{10}}(\rm M_\star/M_\odot) = {logmstar_adjusted:.2f}$
 
 def singleton (target, dirname, output_dir):
     print("Loading catalog...")
-    catalog, masks = sample.load_sample()#filename='../../local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet')
+    try:
+        catalog, masks = sample.load_sample()
+    except FileNotFoundError:
+        filename='../../local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet'
+        catalog, masks = sample.load_sample(filename=filename)
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
