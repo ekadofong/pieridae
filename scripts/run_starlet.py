@@ -7,7 +7,7 @@ low surface brightness features and substructure. It generates QA figures and sa
 feature maps for each target.
 
 Based on analysis from notebooks/Starlet.ipynb
-"""
+""" 
 
 import os
 import glob
@@ -352,12 +352,13 @@ def main(dirname, output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Starlet Wavelet Analysis for Merian Data')
     parser.add_argument('-N', '--target', type=str, help='Process a single target (e.g., ABCDEF)')
-    parser.add_argument('-D', '--data_dir', type=str, default='../local_data/starbursts_v0/' )
-    parser.add_argument('-O', '--output_dir', type=str, default='../local_data/pieridae_output/starlet/starbursts_v0/')
+    parser.add_argument('-T', '--tag', type=str, default='starbursts_v0')
+    parser.add_argument('-D', '--data_dir', type=str, default='../local_data/' )
+    parser.add_argument('-O', '--output_dir', type=str, default='../local_data/pieridae_output/starlet/')
     args = parser.parse_args()
     
-    dirname = args.data_dir #'../local_data/starbursts_v0/'
-    output_dir = args.output_dir
+    dirname = f'{args.data_dir}/{args.tag}/'
+    output_dir = f'{args.output_dir}/{args.tag}/'
     
     if args.target:
         singleton(args.target, dirname, output_dir)
