@@ -182,6 +182,11 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             minarea=minarea,
             segmentation_map=True
         )
+        # \\ remove source-like features
+        ellips = table.Table(feature_cat)['b']/table.Table(feature_cat)['a']
+        for hidx in np.unique(hsb_features)[1:]:
+            if ellips[hidx-1] > 0.6:
+                hsb_features[hsb_features == hidx] = 0        
         
         # Combine LSB and HSB features
         features = np.zeros_like(hsb_features)
