@@ -226,6 +226,22 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             for ft in findices[rdist>60]:
                 features = np.where(features==ft, 0, features)
             features = ndimage.label(features)[0]
+            
+        csersic, cim = fit.fit_sersic_2d(np.where(csource, bbmb.image['i'],0.))
+        reff_mask = imstats.mask_sersic_to_reff(
+            csersic.x_0,
+            csersic.y_0, 
+            csersic.r_eff,
+            csersic.ellip, 
+            csersic.theta,
+            bbmb.image['i'].shape
+        )
+        findices = np.unique(features)[1:]
+        for ft in findices:
+            if reff_mask[features==ft].all():
+                features = np.where(features==ft, 0, features)
+        features = ndimage.label(features)[0]
+        
         
         ridge_stats = []
         for feat in np.arange(1,np.max(features)+1):
@@ -237,7 +253,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             )
             # coefficients, predict_func, fitted_coordinates  = rout
             ridge_stats.append(rout)
-        csersic, cim = fit.fit_sersic_2d(np.where(csource, bbmb.image['i'],0.))
+        
 
         rmag = -2.5*np.log10(csersic.luminosity) + 27.
         rmag_catalog = -2.5*np.log10(catalog.loc[targetid,'r_cModelFlux_Merian']*1e-9/3631.)
