@@ -108,232 +108,234 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
                 psf_ext=0
             )
         
-        # Remove contaminating sources from i-band
-        vm = np.random.normal(0., bbmb.var['i']**0.5)
-        source_cat, sources = sep.extract(
-            bbmb.image['i'].byteswap().newbyteorder(), 
-            3.,
-            deblend_cont=1., 
-            var=bbmb.var['i'].byteswap().newbyteorder(), 
-            segmentation_map=True
-        )
-        central_source = sources[sources.shape[0]//2, sources.shape[1]//2]
-        central_source = sources[sources.shape[0]//2, sources.shape[1]//2]
-        csource = np.where(sources==central_source, 1, 0)
-        sources = np.where(sources == central_source, 0, sources)
-        
-        # Starlet wavelet transform
-        use_gen2 = True
-        wt = imstats.starlet_transform(np.where(sources==0, bbmb.image['i'], vm), gen2=use_gen2)
-        
-        # Process each wavelet scale
-        segmap_l = []
-        im_recon = []
-        
-        for ix in range(len(wt)):
-            # Estimate noise from corners
+        for band in 'gri':
+            # Remove contaminating sources from i-band
+            vm = np.random.normal(0., bbmb.var[band]**0.5)
+            source_cat, sources = sep.extract(
+                bbmb.image[band].byteswap().newbyteorder(), 
+                3.,
+                #deblend_cont=1., 
+                var=bbmb.var[band].byteswap().newbyteorder(), 
+                segmentation_map=True
+            )
+            central_source = sources[sources.shape[0]//2, sources.shape[1]//2]
+            central_source = sources[sources.shape[0]//2, sources.shape[1]//2]
+            csource = np.where(sources==central_source, 1, 0)
+            sources = np.where(sources == central_source, 0, sources)
+            
+            # Starlet wavelet transform
+            use_gen2 = True
+            wt = imstats.starlet_transform(np.where(sources==0, bbmb.image[band], vm), gen2=use_gen2)
+            
+            # Process each wavelet scale
+            segmap_l = []
+            im_recon = []
+            
+            for ix in range(len(wt)):
+                # Estimate noise from corners
+                err_samples = [
+                    np.std(abs(wt[ix])[:25, -25:]),
+                    np.std(abs(wt[ix])[-25:, -25:]),
+                    np.std(abs(wt[ix])[:25, :25]),
+                    np.std(abs(wt[ix])[-25:, :25])
+                ]
+                
+                # Extract features in this wavelet scale
+                _, segmap = sep.extract(
+                    abs(wt[ix]), 
+                    10., 
+                    err=np.median(err_samples), 
+                    segmentation_map=True, 
+                    deblend_cont=1.
+                )
+                
+                # Keep only central source features
+                sidx = segmap[segmap.shape[0]//2, segmap.shape[0]//2]
+                segmap_l.append(segmap)
+                im_recon.append(np.where(segmap == sidx, wt[ix], 0.))
+            
+            # Reconstruct image and create high-frequency residual
+            im_recon = imstats.inverse_starlet_transform(im_recon, gen2=use_gen2)
+            hf_image = bbmb.image[band] - im_recon
+            hf_image = hf_image - ndimage.median_filter(hf_image, size=20)
+            hf_image = np.where(sources > 0, vm, hf_image)
+            
+            # Estimate noise in high-frequency image
             err_samples = [
-                np.std(abs(wt[ix])[:25, -25:]),
-                np.std(abs(wt[ix])[-25:, -25:]),
-                np.std(abs(wt[ix])[:25, :25]),
-                np.std(abs(wt[ix])[-25:, :25])
+                np.std(hf_image[:25, -25:]),
+                np.std(hf_image[-25:, -25:]),
+                np.std(hf_image[:25, :25]),
+                np.std(hf_image[-25:, :25])
             ]
             
-            # Extract features in this wavelet scale
-            _, segmap = sep.extract(
-                abs(wt[ix]), 
-                10., 
+            # Detect LSB and HSB features
+            _, lsb_features = sep.extract(
+                hf_image, 
+                1, 
                 err=np.median(err_samples), 
-                segmentation_map=True, 
-                deblend_cont=1.
+                deblend_cont=1.,
+                segmentation_map=True
             )
+            minarea = np.pi*(bbmb.measure_psfsizes()[0][np.in1d(bbmb.bands, 'i')])**2
+            feature_cat, hsb_features = sep.extract(
+                hf_image, 
+                2, 
+                err=np.median(err_samples), 
+                minarea=minarea,
+                segmentation_map=True
+            )
+            # \\ remove source-like features
+            ellips = table.Table(feature_cat)['b']/table.Table(feature_cat)['a']
+            for hidx in np.unique(hsb_features)[1:]:
+                if ellips[hidx-1] > 0.6:
+                    hsb_features[hsb_features == hidx] = 0        
             
-            # Keep only central source features
-            sidx = segmap[segmap.shape[0]//2, segmap.shape[0]//2]
-            segmap_l.append(segmap)
-            im_recon.append(np.where(segmap == sidx, wt[ix], 0.))
-        
-        # Reconstruct image and create high-frequency residual
-        im_recon = imstats.inverse_starlet_transform(im_recon, gen2=use_gen2)
-        hf_image = bbmb.image['i'] - im_recon
-        hf_image = hf_image - ndimage.median_filter(hf_image, size=20)
-        hf_image = np.where(sources > 0, vm, hf_image)
-        
-        # Estimate noise in high-frequency image
-        err_samples = [
-            np.std(hf_image[:25, -25:]),
-            np.std(hf_image[-25:, -25:]),
-            np.std(hf_image[:25, :25]),
-            np.std(hf_image[-25:, :25])
-        ]
-        
-        # Detect LSB and HSB features
-        _, lsb_features = sep.extract(
-            hf_image, 
-            1, 
-            err=np.median(err_samples), 
-            deblend_cont=1.,
-            segmentation_map=True
-        )
-        minarea = np.pi*(bbmb.measure_psfsizes()[0][np.in1d(bbmb.bands, 'i')])**2
-        feature_cat, hsb_features = sep.extract(
-            hf_image, 
-            2, 
-            err=np.median(err_samples), 
-            minarea=minarea,
-            segmentation_map=True
-        )
-        # \\ remove source-like features
-        ellips = table.Table(feature_cat)['b']/table.Table(feature_cat)['a']
-        for hidx in np.unique(hsb_features)[1:]:
-            if ellips[hidx-1] > 0.6:
-                hsb_features[hsb_features == hidx] = 0        
-        
-        # Combine LSB and HSB features
-        features = np.zeros_like(hsb_features)
-        for ix in np.unique(lsb_features)[1:]:
-            if (hsb_features[lsb_features == ix] > 0).any():
-                features[lsb_features == ix] = 1
-        
-        features = ndimage.label(features)[0]
-        
-        # \\ remove central object
-        cid = features[sources.shape[0]//2, sources.shape[1]//2]
-        if cid > 0:
-            features = np.where(features!=cid, features, 0)
-        features = ndimage.label(features)[0]
-        
-        # \\ remove background red objects
-        findices = np.unique(features)[1:]
-        gr = -2.5*np.log10(
-            ndimage.sum(bbmb.image['g'], features, findices)/
-            ndimage.sum(bbmb.image['r'], features, findices)
-        )
-        ri = -2.5*np.log10(
-            ndimage.sum(bbmb.image['r'], features, findices)/
-            ndimage.sum(bbmb.image['i'], features, findices)
-        )
-        too_red = ri > (0.48*gr+0.2)
-        for ft in findices[too_red]:
-            hf_image = np.where(features==ft, vm, hf_image)
-            features = np.where(features==ft, 0, features)
+            # Combine LSB and HSB features
+            features = np.zeros_like(hsb_features)
+            for ix in np.unique(lsb_features)[1:]:
+                if (hsb_features[lsb_features == ix] > 0).any():
+                    features[lsb_features == ix] = 1
             
-        features = ndimage.label(features)[0]
-        
-        # \\ remove detected features on the cutout edges
-        findices = np.unique(features)[1:]
-        com = np.array(ndimage.center_of_mass(bbmb.image['i'],features,findices)).reshape(-1,2)
-        if com.shape[0] > 0:
-            imshape = bbmb.image['i'].shape
-            rdist = np.sqrt((com[:,0] - imshape[1]//2)**2 + (com[:,1] - imshape[0]//2)**2)
-            for ft in findices[rdist>60]:
-                features = np.where(features==ft, 0, features)
             features = ndimage.label(features)[0]
             
-        csersic, cim = fit.fit_sersic_2d(np.where(csource, bbmb.image['i'],0.))
-        reff_mask = imstats.mask_sersic_to_reff(
-            csersic.x_0,
-            csersic.y_0, 
-            csersic.r_eff,
-            csersic.ellip, 
-            csersic.theta,
-            bbmb.image['i'].shape
-        )
-        findices = np.unique(features)[1:]
-        for ft in findices:
-            if reff_mask[features==ft].all():
-                features = np.where(features==ft, 0, features)
-        features = ndimage.label(features)[0]
-        
-        
-        ridge_stats = []
-        for feat in np.arange(1,np.max(features)+1):
-            rout = fit.fit_ridgeline_image(
-                hf_image, 
-                features==feat, 
-                order=1, 
-                return_stats=False
-            )
-            # coefficients, predict_func, fitted_coordinates  = rout
-            ridge_stats.append(rout)
-        
-
-        rmag = -2.5*np.log10(csersic.luminosity) + 27.
-        rmag_catalog = -2.5*np.log10(catalog.loc[targetid,'r_cModelFlux_Merian']*1e-9/3631.)
-        absmag_r =  rmag - cosmo.distmod(0.08).value
+            # \\ remove central object
+            cid = features[sources.shape[0]//2, sources.shape[1]//2]
+            if cid > 0:
+                features = np.where(features!=cid, features, 0)
+            features = ndimage.label(features)[0]
             
-        rmag_seg = -2.5*np.log10(table.Table(source_cat)[central_source-1]['flux']) + 27.
-        logmstar_adjusted = 0.4*(rmag_catalog - rmag_seg) + catalog.loc[targetid,'logmass']
-    
-        # Generate 4-panel QA figure
-        fig, axarr = plt.subplots(1, 4, figsize=(15, 4))
-        
-        # Panel 0: RGB image
-        ek.imshow(
-            make_lupton_rgb(bbmb.image['i'], bbmb.image['n708'], bbmb.image['r'], stretch=1, Q=7), 
-            axarr[0]
-        )
-        
-        # Panel 1: Original i-band image
-        ek.imshow(bbmb.image['i'], q=0.05, ax=axarr[1], cmap='Greys')
-        
-        # Panel 2: High-frequency image with feature contours
-        ek.imshow(hf_image, q=0.01, ax=axarr[2], cmap='viridis')
-        
-        
-        # Panel 3: Sum of segmentation maps
-        ek.imshow(hf_image, q=0.01, ax=axarr[3], cmap='Greys')
-        ek.contour(features, ax=axarr[3], colors='r')
+            # \\ remove background red objects
+            findices = np.unique(features)[1:]
+            gr = -2.5*np.log10(
+                ndimage.sum(bbmb.image['g'], features, findices)/
+                ndimage.sum(bbmb.image['r'], features, findices)
+            )
+            ri = -2.5*np.log10(
+                ndimage.sum(bbmb.image['r'], features, findices)/
+                ndimage.sum(bbmb.image[band], features, findices)
+            )
+            too_red = ri > (0.48*gr+0.2)
+            for ft in findices[too_red]:
+                hf_image = np.where(features==ft, vm, hf_image)
+                features = np.where(features==ft, 0, features)
+                
+            features = ndimage.label(features)[0]
+            
+            # \\ remove detected features on the cutout edges
+            findices = np.unique(features)[1:]
+            com = np.array(ndimage.center_of_mass(bbmb.image[band],features,findices)).reshape(-1,2)
+            if com.shape[0] > 0:
+                imshape = bbmb.image[band].shape
+                rdist = np.sqrt((com[:,0] - imshape[1]//2)**2 + (com[:,1] - imshape[0]//2)**2)
+                for ft in findices[rdist>60]:
+                    features = np.where(features==ft, 0, features)
+                features = ndimage.label(features)[0]
+                
+            csersic, cim = fit.fit_sersic_2d(np.where(csource, bbmb.image[band],0.))
+            reff_mask = imstats.mask_sersic_to_reff(
+                csersic.x_0,
+                csersic.y_0, 
+                csersic.r_eff,
+                csersic.ellip, 
+                csersic.theta,
+                bbmb.image[band].shape
+            )
+            findices = np.unique(features)[1:]
+            for ft in findices:
+                if reff_mask[features==ft].all():
+                    features = np.where(features==ft, 0, features)
+            features = ndimage.label(features)[0]
+            
+            
+            ridge_stats = []
+            for feat in np.arange(1,np.max(features)+1):
+                rout = fit.fit_ridgeline_image(
+                    hf_image, 
+                    features==feat, 
+                    order=1, 
+                    return_stats=False
+                )
+                # coefficients, predict_func, fitted_coordinates  = rout
+                ridge_stats.append(rout)
+            
 
-        xs = np.arange(cim.shape[1])
-        ys = np.arctan(csersic.theta.value)*(xs-csersic.x_0.value) + csersic.y_0.value
-        ys = np.where((ys>0)&(ys<xs.max()), ys, np.nan)
-        #ek.outlined_plot(central_fitted_coordinates['x'], central_predict_func(central_fitted_coordinates['x']), color='b', lw=1)        
-        ek.outlined_plot(xs, ys, color='b', ls='--', lw=1, ax=axarr[3])
-        ek.contour(cim, colors='b', ax=axarr[3])
-        for rout in ridge_stats:
-            coefficients, predict_func, fitted_coordinates = rout
-            ek.outlined_plot(fitted_coordinates['x'], predict_func(fitted_coordinates['x']), color='r', lw=1, ax=axarr[3])
+            rmag = -2.5*np.log10(csersic.luminosity) + 27.
+            rmag_catalog = -2.5*np.log10(catalog.loc[targetid,'r_cModelFlux_Merian']*1e-9/3631.)
+            absmag_r =  rmag - cosmo.distmod(0.08).value
+                
+            rmag_seg = -2.5*np.log10(table.Table(source_cat)[central_source-1]['flux']) + 27.
+            logmstar_adjusted = 0.4*(rmag_catalog - rmag_seg) + catalog.loc[targetid,'logmass']
         
-        ek.text(
-            0.025,
-            0.975,
-            rf'''{targetid}
-({target})
-$\log_{{10}}(\rm M_\star/M_\odot) = {logmstar_adjusted:.2f}$
-''',
-            ax=axarr[0],
-            color='w',
-            fontsize=10
-        )
-        # Remove axis ticks and add titles
-        titles = ['RGB (i,N708,r)', 'i-band', 'High-freq + Features', 'Wavelet Segmaps']
-        for ax, title in zip(axarr, titles):
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_title(title)
-        
-        plt.tight_layout()
-        
-        # Save figure
-        fig_path = os.path.join(target_output_dir, f"{targetid}_starlet_qa.png")
-        plt.savefig(fig_path, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"Saved QA figure: {fig_path}")
-        
-        # Save results dictionary with feature map, coefficients, and Sersic parameters
-        results_dict = {
-            'feature_map': features,
-            'hf_image':hf_image,
-            'ridge_coefficients': [rout[0] for rout in ridge_stats],
-            'sersic_parameters': list(zip(csersic.param_names, csersic.parameters)),
-            'absmag_r':absmag_r,
-            'logmass_adjusted':logmstar_adjusted,
-        }
-        results_path = os.path.join(target_output_dir, f"{targetid}_results.pkl")
-        with open(results_path, 'wb') as f:
-            pickle.dump(results_dict, f)
-        print(f"Saved results dictionary: {results_path}")
+            # Generate 4-panel QA figure
+            fig, axarr = plt.subplots(1, 4, figsize=(15, 4))
+            
+            # Panel 0: RGB image
+            ek.imshow(
+                make_lupton_rgb(bbmb.image['i'], bbmb.image['n708'], bbmb.image['r'], stretch=1, Q=7), 
+                axarr[0]
+            )
+            
+            # Panel 1: Original i-band image
+            ek.imshow(bbmb.image[band], q=0.05, ax=axarr[1], cmap='Greys')
+            
+            # Panel 2: High-frequency image with feature contours
+            ek.imshow(hf_image, q=0.01, ax=axarr[2], cmap='viridis')
+            
+            
+            # Panel 3: Sum of segmentation maps
+            ek.imshow(hf_image, q=0.01, ax=axarr[3], cmap='Greys')
+            ek.contour(features, ax=axarr[3], colors='r')
+
+            xs = np.arange(cim.shape[1])
+            ys = np.arctan(csersic.theta.value)*(xs-csersic.x_0.value) + csersic.y_0.value
+            ys = np.where((ys>0)&(ys<xs.max()), ys, np.nan)
+            #ek.outlined_plot(central_fitted_coordinates['x'], central_predict_func(central_fitted_coordinates['x']), color='b', lw=1)        
+            ek.outlined_plot(xs, ys, color='b', ls='--', lw=1, ax=axarr[3])
+            ek.contour(cim, colors='b', ax=axarr[3])
+            for rout in ridge_stats:
+                coefficients, predict_func, fitted_coordinates = rout
+                ek.outlined_plot(fitted_coordinates['x'], predict_func(fitted_coordinates['x']), color='r', lw=1, ax=axarr[3])
+            
+            ek.text(
+                0.025,
+                0.975,
+                rf'''{targetid}
+    ({target})
+    $\log_{{10}}(\rm M_\star/M_\odot) = {logmstar_adjusted:.2f}$
+    ''',
+                ax=axarr[0],
+                color='w',
+                fontsize=10
+            )
+            # Remove axis ticks and add titles
+            titles = ['RGB (i,N708,r)', 'i-band', 'High-freq + Features', 'Wavelet Segmaps']
+            for ax, title in zip(axarr, titles):
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_title(title)
+            
+            plt.tight_layout()
+            
+            # Save figure
+            fig_path = os.path.join(target_output_dir, f"{targetid}_{band}_starlet_qa.png")
+            plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"Saved QA figure: {fig_path}")
+            
+            # Save results dictionary with feature map, coefficients, and Sersic parameters
+            results_dict = {
+                #'feature_map': features,
+                'image':bbmb.image[band],
+                'hf_image':hf_image,
+                'ridge_coefficients': [rout[0] for rout in ridge_stats],
+                'sersic_parameters': list(zip(csersic.param_names, csersic.parameters)),
+                'absmag_r':absmag_r,
+                'logmass_adjusted':logmstar_adjusted,
+            }
+            results_path = os.path.join(target_output_dir, f"{targetid}_{band}_results.pkl")
+            with open(results_path, 'wb') as f:
+                pickle.dump(results_dict, f)
+            print(f"Saved results dictionary: {results_path}")
         
         print(f"Successfully processed {targetid}")
         
