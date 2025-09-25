@@ -1,0 +1,99 @@
+# BYOL Analysis Configuration
+# Configuration file for cluster-based BYOL analysis
+
+data:
+  input_path: "local_data/pieridae_output"  # Path to input data directory
+  output_path: "byol_results"               # Path to output results
+
+model:
+  image_size: 150                          # Input image size
+  projection_size: 256                     # Final projection dimension
+  projection_hidden_size: 1024             # Hidden layer in projector MLP
+  moving_average_decay: 0.99               # τ_base for EMA updates
+
+training:
+  num_epochs: 50                           # Number of training epochs
+  batch_size: 32                           # Training batch size (adjust for GPU memory)
+  learning_rate: 3e-4                      # Adam optimizer learning rate
+  save_interval: 10                        # Save checkpoint every N epochs
+  resume: true                             # Resume from checkpoint if available
+
+inference:
+  batch_size: 64                           # Batch size for embedding extraction
+
+analysis:
+  # PCA parameters
+  pca_components: 50                       # Number of PCA components (null for auto)
+  explained_variance_threshold: 0.95       # Variance threshold for auto PCA components
+
+  # UMAP parameters
+  umap_components: 2                       # Final UMAP dimensions (2 for visualization)
+  n_neighbors: 30                          # UMAP n_neighbors (5-50, controls local/global)
+  min_dist: 0.1                           # UMAP min_dist (0.001-0.5, controls tightness)
+  metric: "euclidean"                      # Distance metric for UMAP
+
+# Cluster-specific settings
+cluster:
+  # Environment settings
+  conda_env: "merenv"                      # Conda environment name
+  modules:                                 # Environment modules to load
+    - "anaconda3/2023.9"
+
+  # Resource requirements
+  gpu_job:
+    partition: "gpu"
+    nodes: 1
+    cpus_per_task: 8
+    mem: "64G"
+    gres: "gpu:1"
+    time: "4:00:00"
+
+  cpu_job:
+    partition: "cpu"
+    nodes: 1
+    cpus_per_task: 16
+    mem: "128G"
+    time: "2:00:00"
+
+  # I/O optimization
+  use_scratch: true                        # Copy data to scratch for better I/O
+  scratch_base: "/scratch/gpfs"            # Base scratch directory
+
+# Logging and monitoring
+logging:
+  level: "INFO"                           # Logging level (DEBUG, INFO, WARNING, ERROR)
+  save_logs: true                         # Save logs to file
+  console_output: true                    # Print to console
+
+# Visualization settings
+visualization:
+  create_plots: true                      # Generate visualization plots
+  plot_format: "png"                      # Plot file format
+  dpi: 300                               # Plot resolution
+  figsize: [12, 8]                       # Default figure size
+
+# Advanced settings
+advanced:
+  # Data preprocessing
+  normalize_images: false                 # Apply image normalization
+  remove_outliers: false                  # Remove embedding outliers
+
+  # Memory management
+  clear_cache: true                       # Clear cache between stages
+  low_memory_mode: false                  # Use memory-efficient processing
+
+  # Reproducibility
+  random_seed: 42                         # Random seed for reproducibility
+  deterministic: false                    # Use deterministic algorithms (slower but reproducible)
+
+# Classification labels (optional)
+labels:
+  file_path: "./classifications_kadofong_20250925.csv"  # Path to classification file
+  index_column: 0                         # Column index for image names
+  label_mapping:                          # Label meanings
+    0: "unclassified"
+    1: "undisturbed"
+    2: "ambiguous"
+    3: "merger"
+    4: "fragmentation"
+    5: "artifact"
