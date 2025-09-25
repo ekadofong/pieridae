@@ -25,8 +25,8 @@ module load anaconda3/2023.9
 conda activate merenv
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
-export PYTHONPATH=$SLURM_SUBMIT_DIR:$PYTHONPATH
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
+export PYTHONPATH="$SLURM_SUBMIT_DIR:${PYTHONPATH:-}"
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Create output directory

@@ -23,7 +23,7 @@ module load anaconda3/2023.9
 conda activate merenv
 
 # Set environment variables
-export PYTHONPATH=$SLURM_SUBMIT_DIR:$PYTHONPATH
+export PYTHONPATH="$SLURM_SUBMIT_DIR:${PYTHONPATH:-}"
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Create output directory

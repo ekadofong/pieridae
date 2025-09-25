@@ -26,8 +26,8 @@ module load anaconda3/2023.9
 conda activate merenv
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
-export PYTHONPATH=$SLURM_SUBMIT_DIR:$PYTHONPATH
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
+export PYTHONPATH="$SLURM_SUBMIT_DIR:${PYTHONPATH:-}"
 
 # Create output directory on scratch (faster I/O)
 OUTPUT_DIR="/scratch/gpfs/$USER/byol_results/gpu_$(date +%Y%m%d_%H%M%S)"

@@ -14,6 +14,8 @@ All BYOL scripts are located in `scripts/byol/`:
 - **`submit_byol_full.slurm`** - Slurm script for complete pipeline (CPU)
 - **`submit_byol_full_gpu.slurm`** - Slurm script for complete pipeline (GPU)
 - **`run_byol.py`** - Utility script for job management and monitoring
+- **`run_byol_macos.sh`** - macOS runner with Apple Silicon GPU support
+- **`byol_cluster_analysis_macos.py`** - macOS-optimized analysis script
 
 ## CPU vs GPU Usage
 
@@ -102,6 +104,22 @@ python run_byol.py monitor --job-id <JOB_ID>
 
 # View job logs
 python run_byol.py logs --job-id <JOB_ID>
+```
+
+### 5. macOS Usage (Local Development)
+```bash
+# From the scripts/byol directory
+cd scripts/byol
+
+# Run full pipeline with Apple Silicon GPU acceleration
+./run_byol_macos.sh full
+
+# Or individual modes
+./run_byol_macos.sh train --epochs 25
+./run_byol_macos.sh analyze
+
+# Direct Python execution
+python byol_cluster_analysis_macos.py --mode full --epochs 25
 ```
 
 ## Pipeline Stages
@@ -222,21 +240,30 @@ For large datasets, consider:
 
 ### Common Issues
 
-1. **Out of Memory (GPU)**
+1. **PYTHONPATH Errors (Fixed)**
+   - All Slurm scripts now handle undefined PYTHONPATH safely
+   - Uses `${PYTHONPATH:-}` syntax to avoid undefined variable errors
+
+2. **Out of Memory (GPU)**
    - Reduce `training.batch_size` in config
    - Use smaller model (`projection_hidden_size`)
 
-2. **Out of Memory (CPU)**
+3. **Out of Memory (CPU)**
    - Reduce `inference.batch_size`
    - Use fewer PCA components
    - Enable `low_memory_mode`
 
-3. **Data Not Found**
+4. **macOS MPS Issues**
+   - Automatic fallback to CPU if MPS encounters errors
+   - Reduced batch sizes for Apple Silicon memory constraints
+   - Memory fraction set to 0.8 to prevent OOM
+
+5. **Data Not Found**
    - Verify `data.input_path` in config
    - Check file permissions
    - Ensure data is accessible from compute nodes
 
-4. **Job Fails to Start**
+6. **Job Fails to Start**
    - Check account/partition settings
    - Verify conda environment exists
    - Check Slurm resource limits
