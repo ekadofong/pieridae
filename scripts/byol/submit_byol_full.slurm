@@ -6,9 +6,8 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=6:00:00
-#SBATCH --partition=gpu
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=$USER@princeton.edu
+#SBATCH --partition=gpu-short
+#SBATCH --account merian
 
 # Set strict error handling
 set -euo pipefail
