@@ -8,10 +8,26 @@ All BYOL scripts are located in `scripts/byol/`:
 
 - **`byol_cluster_analysis.py`** - Main Python script containing the BYOL analysis pipeline
 - **`byol_config.yaml`** - Configuration file with all parameters
-- **`submit_byol_train.slurm`** - Slurm script for GPU training phase
+- **`submit_byol_train.slurm`** - Slurm script for CPU training (default)
+- **`submit_byol_train_gpu.slurm`** - Slurm script for GPU training (faster)
 - **`submit_byol_analyze.slurm`** - Slurm script for CPU analysis phase
-- **`submit_byol_full.slurm`** - Slurm script for complete pipeline
+- **`submit_byol_full.slurm`** - Slurm script for complete pipeline (CPU)
+- **`submit_byol_full_gpu.slurm`** - Slurm script for complete pipeline (GPU)
 - **`run_byol.py`** - Utility script for job management and monitoring
+
+## CPU vs GPU Usage
+
+**Default: CPU-Only Processing**
+- All scripts now use CPU by default for better cluster resource utilization
+- BYOL training works on CPU (PyTorch will use all available cores)
+- Longer training time but no GPU queue wait
+- More accessible and reliable resource allocation
+
+**Optional: GPU Acceleration**
+- Use `*_gpu.slurm` scripts for GPU acceleration
+- Significantly faster training (~3x speedup)
+- May have longer queue wait times for GPU resources
+- Same final results as CPU version
 
 ## Quick Start
 
@@ -36,9 +52,12 @@ Edit `byol_config.yaml` to adjust parameters:
 
 #### Option A: Full Pipeline (Recommended)
 ```bash
-# From the scripts/byol directory
+# From the scripts/byol directory (CPU by default)
 cd scripts/byol
 python run_byol.py submit --mode full
+
+# Or with GPU acceleration (faster, if GPUs available)
+python run_byol.py submit --mode full_gpu
 ```
 
 #### Option B: Separate Jobs
@@ -46,8 +65,11 @@ python run_byol.py submit --mode full
 # From the scripts/byol directory
 cd scripts/byol
 
-# Submit training job (GPU)
+# Submit training job (CPU by default)
 python run_byol.py submit --mode train
+
+# Or training job with GPU (faster)
+python run_byol.py submit --mode train_gpu
 
 # After training completes, submit analysis job (CPU)
 python run_byol.py submit --mode analyze
@@ -55,12 +77,16 @@ python run_byol.py submit --mode analyze
 
 #### Option C: Direct Slurm Submission
 ```bash
-# From project root directory
+# From project root directory (CPU by default)
 sbatch scripts/byol/submit_byol_full.slurm
 
-# Or individual components
-sbatch scripts/byol/submit_byol_train.slurm
-sbatch scripts/byol/submit_byol_analyze.slurm
+# Or with GPU acceleration
+sbatch scripts/byol/submit_byol_full_gpu.slurm
+
+# Individual components
+sbatch scripts/byol/submit_byol_train.slurm      # CPU training
+sbatch scripts/byol/submit_byol_train_gpu.slurm  # GPU training
+sbatch scripts/byol/submit_byol_analyze.slurm    # Analysis (CPU)
 ```
 
 ### 4. Monitor Jobs
@@ -85,19 +111,20 @@ python run_byol.py logs --job-id <JOB_ID>
 - Supports multi-band images (g, i bands + high-frequency component)
 - Automatically handles missing files
 
-### 2. BYOL Training (GPU Phase)
+### 2. BYOL Training
 - Uses ResNet18 backbone with ImageNet pretrained weights
 - Self-supervised learning with data augmentations
 - Automatic checkpointing every 10 epochs
 - Resumable from checkpoints
-- **Resource Requirements**: 1 GPU, 8 CPUs, 64GB RAM, ~4 hours
+- **CPU Mode (Default)**: 16 CPUs, 64GB RAM, ~6 hours
+- **GPU Mode (Optional)**: 1 GPU, 8 CPUs, 64GB RAM, ~4 hours
 
 ### 3. Embedding Extraction
 - Extracts learned representations from trained model
 - Batch processing for memory efficiency
 - Saves embeddings as `.npy` files
 
-### 4. Dimensionality Reduction & Analysis (CPU Phase)
+### 4. Dimensionality Reduction & Analysis
 - **PCA**: Reduces embedding dimensionality
 - **UMAP**: Creates 2D visualization embeddings
 - **Similarity Analysis**: Computes cosine similarity matrix
@@ -143,18 +170,20 @@ Results are saved to `byol_results/` with timestamp subdirectories:
 
 ## Resource Usage Guidelines
 
-### GPU Jobs (Training)
+### CPU Jobs (Default - Recommended)
+- Use `partition=cpu`
+- **Training**: 16 CPUs, 64GB RAM, 6-8 hours
+- **Analysis**: 16 CPUs, 128GB RAM, 2-3 hours
+- **Full Pipeline**: 16 CPUs, 128GB RAM, 8-10 hours
+- More accessible, no GPU queue wait times
+
+### GPU Jobs (Optional - Faster Training)
 - Use `partition=gpu`
 - Request 1 GPU (`gres=gpu:1`)
 - 8-16 CPUs typically sufficient
 - 32-64GB RAM depending on batch size
 - Time limit: 2-6 hours depending on epochs
-
-### CPU Jobs (Analysis)
-- Use `partition=cpu`
-- 16-32 CPUs for PCA/UMAP parallelization
-- 64-128GB RAM for large similarity matrices
-- Time limit: 1-3 hours
+- Faster training but may have longer queue times
 
 ## Advanced Usage
 

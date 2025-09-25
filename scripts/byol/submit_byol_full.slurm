@@ -2,12 +2,11 @@
 #SBATCH --job-name=byol_full_pipeline
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=6:00:00
-#SBATCH --partition=gpu-short
-#SBATCH --account merian
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=8:00:00
+#SBATCH --partition=cpu
+#SBATCH --account=merian
 
 # Set strict error handling
 set -euo pipefail
@@ -24,7 +23,6 @@ module load anaconda3/2023.9
 conda activate merenv
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
 export PYTHONPATH=$SLURM_SUBMIT_DIR:$PYTHONPATH
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
@@ -43,12 +41,15 @@ if [ -d "$DATA_DIR" ] && [ ! -d "$SCRATCH_DATA_DIR" ]; then
     echo "Data copy completed"
 fi
 
-# Check GPU
-echo "GPU Information:"
-nvidia-smi
+# Check system resources
+echo "System Information:"
+echo "CPU cores: $SLURM_CPUS_PER_TASK"
+echo "Memory: ${SLURM_MEM_PER_NODE}MB"
+echo "Available memory:"
+free -h
 
-# Run full BYOL pipeline
-echo "Starting full BYOL pipeline (train + analyze)..."
+# Run full BYOL pipeline (CPU-only mode)
+echo "Starting full BYOL pipeline (train + analyze) in CPU-only mode..."
 LOG_FILE="$OUTPUT_DIR/slurm_job_${SLURM_JOB_ID}.log"
 
 python3 "$SLURM_SUBMIT_DIR/scripts/byol/byol_cluster_analysis.py" \
