@@ -26,8 +26,10 @@ class BYOLJobManager:
         # Slurm script paths
         self.scripts = {
             'train': self.scripts_dir / 'submit_byol_train.slurm',
+            'train_gpu': self.scripts_dir / 'submit_byol_train_gpu.slurm',
             'analyze': self.scripts_dir / 'submit_byol_analyze.slurm',
-            'full': self.scripts_dir / 'submit_byol_full.slurm'
+            'full': self.scripts_dir / 'submit_byol_full.slurm',
+            'full_gpu': self.scripts_dir / 'submit_byol_full_gpu.slurm'
         }
 
         # Verify script files exist
@@ -239,7 +241,7 @@ def main():
     parser = argparse.ArgumentParser(description='BYOL Cluster Job Manager')
     parser.add_argument('action', choices=['submit', 'status', 'monitor', 'cancel', 'logs', 'list', 'cleanup'],
                        help='Action to perform')
-    parser.add_argument('--mode', choices=['train', 'analyze', 'full'], default='full',
+    parser.add_argument('--mode', choices=['train', 'train_gpu', 'analyze', 'full', 'full_gpu'], default='full',
                        help='BYOL analysis mode')
     parser.add_argument('--job-id', help='Job ID for status/monitor/cancel/logs actions')
     parser.add_argument('--account', help='Slurm account to use')

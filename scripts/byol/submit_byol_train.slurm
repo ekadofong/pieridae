@@ -2,11 +2,10 @@
 #SBATCH --job-name=byol_train
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:1
-#SBATCH --time=4:00:00
-#SBATCH --partition=gpu
+#SBATCH --time=6:00:00
+#SBATCH --partition=cpu
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=$USER@princeton.edu
 
@@ -26,8 +25,8 @@ module load anaconda3/2023.9
 conda activate merenv
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES
 export PYTHONPATH=$SLURM_SUBMIT_DIR:$PYTHONPATH
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Create output directory on scratch (faster I/O)
 OUTPUT_DIR="/scratch/gpfs/$USER/byol_results/$(date +%Y%m%d_%H%M%S)"
@@ -44,15 +43,18 @@ if [ -d "$DATA_DIR" ] && [ ! -d "$SCRATCH_DATA_DIR" ]; then
     echo "Data copy completed"
 fi
 
-# Check GPU availability
-echo "GPU Information:"
-nvidia-smi
+# Check system resources
+echo "System Information:"
+echo "CPU cores: $SLURM_CPUS_PER_TASK"
+echo "Memory: ${SLURM_MEM_PER_NODE}MB"
+echo "Available memory:"
+free -h
 
 # Set up logging
 LOG_FILE="$OUTPUT_DIR/slurm_job_${SLURM_JOB_ID}.log"
 
-# Run BYOL training
-echo "Starting BYOL training..."
+# Run BYOL training (CPU-only mode)
+echo "Starting BYOL training (CPU-only mode)..."
 python3 "$SLURM_SUBMIT_DIR/scripts/byol/byol_cluster_analysis.py" \
     --mode train \
     --data-path "$SCRATCH_DATA_DIR/pieridae_output" \
