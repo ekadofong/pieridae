@@ -28,12 +28,12 @@ export PYTHONPATH="$SLURM_SUBMIT_DIR:${PYTHONPATH:-}"
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Create output directory on scratch (faster I/O)
-OUTPUT_DIR="/scratch/gpfs/$USER/byol_results/$(date +%Y%m%d_%H%M%S)"
+OUTPUT_DIR="/scratch/gpfs/MERIAN/user/$USER/byol_results/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTPUT_DIR"
 
 # Copy data to scratch if needed for better I/O performance
 DATA_DIR="$SLURM_SUBMIT_DIR/local_data"
-SCRATCH_DATA_DIR="/scratch/gpfs/$USER/byol_data"
+SCRATCH_DATA_DIR="/scratch/gpfs/MERIAN/user/$USER/byol_data"
 
 if [ -d "$DATA_DIR" ] && [ ! -d "$SCRATCH_DATA_DIR" ]; then
     echo "Copying data to scratch for better I/O performance..."
