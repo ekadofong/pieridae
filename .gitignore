@@ -208,3 +208,5 @@ __marimo__/
 local_data/
 *.png
 *.npz
+
+scripts/slurm*out
