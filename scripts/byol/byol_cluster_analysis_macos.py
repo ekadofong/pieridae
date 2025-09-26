@@ -314,6 +314,7 @@ def main():
             analysis.compute_pca_umap()
             analysis.compute_similarity_analysis()
             analysis.create_visualizations()
+            analysis.compute_labeled_distance_metrics()
 
         print("✅ macOS Analysis completed successfully!")
 

@@ -435,7 +435,7 @@ class BYOLClusterAnalysis:
 
         # Load labels if available
         labels = None
-        label_file = Path('./classifications_kadofong_20250925.csv')
+        label_file = Path(self.config.get('labels', {}).get('classifications_file', './classifications_kadofong_20250926.csv'))
         if label_file.exists() and self.img_names is not None:
             try:
                 mergers = pd.read_csv(label_file, index_col=0)
@@ -467,7 +467,7 @@ class BYOLClusterAnalysis:
         axes[0,1].set_ylabel('Cumulative Explained Variance')
         axes[0,1].set_title('Cumulative Variance Explained')
         axes[0,1].grid(True, alpha=0.3)
-        axes[0,1].legend()
+        axes[0,1].legend(fontsize=8)
 
         plt.tight_layout()
         plt.savefig(self.output_path / 'pca_analysis.png', dpi=300, bbox_inches='tight')
@@ -499,10 +499,19 @@ class BYOLClusterAnalysis:
         axes[0].grid(True, alpha=0.3)
 
         # UMAP plot
-        scatter = axes[1].scatter(result['embeddings_umap'][:, 0],
-                                 result['embeddings_umap'][:, 1],
-                                 cmap=cmap,
-                                 alpha=1., s=10, c='grey' if labels is None else labels)
+        if labels is not None:
+            scatter = axes[1].scatter(result['embeddings_umap'][labels==0, 0],
+                                    result['embeddings_umap'][labels==0, 1],                                    
+                                    alpha=1., s=3, c='lightgrey')
+            scatter = axes[1].scatter(result['embeddings_umap'][labels>0, 0],
+                                    result['embeddings_umap'][labels>0, 1],
+                                    cmap=cmap,
+                                    alpha=1., s=10, c=labels[labels>0], vmin=0)            
+        else:
+            scatter = axes[1].scatter(result['embeddings_umap'][:, 0],
+                                    result['embeddings_umap'][:, 1],
+                                    cmap=cmap,
+                                    alpha=1., s=10, c='grey' if labels is None else labels)
         axes[1].set_title('PCA + UMAP')
         axes[1].set_xlabel('UMAP 1')
         axes[1].set_ylabel('UMAP 2')
@@ -547,7 +556,7 @@ class BYOLClusterAnalysis:
 
         # Load labels if available
         labels = None
-        label_file = Path('./classifications_kadofong_20250925.csv')
+        label_file = Path(self.config.get('labels', {}).get('classifications_file', './classifications_kadofong_20250926.csv'))
         if label_file.exists() and self.img_names is not None:
             try:
                 import pandas as pd
@@ -575,7 +584,7 @@ class BYOLClusterAnalysis:
         # Compute overall average distance (for normalization)
         # Use upper triangle to avoid double counting and diagonal
         upper_triangle_indices = np.triu_indices(distances.shape[0], k=1)
-        overall_avg_distance = np.mean(distances[upper_triangle_indices])
+        overall_avg_distance = np.median(distances[upper_triangle_indices])
 
         # Compute intra-class distances for each label (excluding 0 and 1)
         metrics = {
@@ -599,7 +608,7 @@ class BYOLClusterAnalysis:
                     upper_indices = np.triu_indices(class_distances.shape[0], k=1)
                     intra_class_dists = class_distances[upper_indices]
 
-                    avg_intra_distance = np.mean(intra_class_dists)
+                    avg_intra_distance = np.median(intra_class_dists)
                     normalized_distance = avg_intra_distance / overall_avg_distance
 
                     metrics['intra_class_distances'][label_val] = {
@@ -804,6 +813,7 @@ def main():
         analysis.compute_similarity_analysis()
         analysis.create_visualizations()
         analysis.compute_labeled_distance_metrics()
+
 
     print("Analysis completed successfully!")
 
