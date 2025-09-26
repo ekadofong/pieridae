@@ -7,6 +7,7 @@ Modified version optimized for macOS with MPS (Metal Performance Shaders) suppor
 import os
 import sys
 import torch
+from tqdm import tqdm
 
 # Check and configure MPS (Apple Silicon GPU) support
 def setup_device():
@@ -35,6 +36,11 @@ class BYOLMacOSAnalysis(BYOLClusterAnalysis):
     """macOS-optimized version of BYOL analysis"""
 
     def __init__(self, config):
+        # Create output directory before calling parent __init__ (which sets up logging)
+        from pathlib import Path
+        output_path = Path(config['data']['output_path'])
+        output_path.mkdir(parents=True, exist_ok=True)
+
         # Override device selection for macOS
         super().__init__(config)
         self.device = setup_device()
@@ -68,14 +74,12 @@ class BYOLMacOSAnalysis(BYOLClusterAnalysis):
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomRotation(degrees=180),
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
-            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))
         )
 
         transform2 = nn.Sequential(
             transforms.RandomVerticalFlip(p=0.5),
             transforms.RandomRotation(degrees=180),
             transforms.ColorJitter(brightness=0.3, contrast=0.3),
-            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.3)
         )
 
         # Base model - use smaller model for MPS if needed
@@ -108,13 +112,12 @@ class BYOLMacOSAnalysis(BYOLClusterAnalysis):
         if self.learner is None:
             self.setup_model()
 
-        from torch.optim import Adam
-        from tqdm import tqdm
+        from torch.optim import Adam        
         import torch
 
         optimizer = Adam(
             self.learner.parameters(),
-            lr=self.config['training']['learning_rate']
+            lr=float(self.config['training']['learning_rate'])
         )
 
         # Setup checkpointing
@@ -124,11 +127,17 @@ class BYOLMacOSAnalysis(BYOLClusterAnalysis):
         # Resume from checkpoint if exists
         if checkpoint_path.exists() and self.config['training']['resume']:
             self.logger.info("Loading checkpoint...")
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            self.learner.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            self.logger.info(f"Resumed from epoch {start_epoch}")
+            try:
+                # Try with weights_only=False for our trusted checkpoint
+                checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+                self.learner.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                start_epoch = checkpoint['epoch'] + 1
+                self.logger.info(f"Resumed from epoch {start_epoch}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load checkpoint: {e}")
+                self.logger.info("Starting training from scratch...")
+                start_epoch = 0
 
         # Training loop with MPS error handling
         num_epochs = self.config['training']['num_epochs']
@@ -198,7 +207,7 @@ class BYOLMacOSAnalysis(BYOLClusterAnalysis):
                 raise FileNotFoundError(f"Trained model not found: {model_path}")
 
             self.setup_model()
-            checkpoint = torch.load(model_path, map_location=self.device)
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
             self.learner.load_state_dict(checkpoint['model_state_dict'])
 
         self.learner.eval()
@@ -266,7 +275,12 @@ def main():
     if args.config:
         config = load_config(args.config)
     else:
-        config = create_default_config()
+        # Try to load byol_config.yaml from script directory first
+        default_config_path = Path(__file__).parent / 'byol_config.yaml'
+        if default_config_path.exists():
+            config = load_config(str(default_config_path))
+        else:
+            config = create_default_config()
 
     # Override config with command line arguments
     if args.data_path:

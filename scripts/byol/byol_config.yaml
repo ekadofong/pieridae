@@ -2,8 +2,8 @@
 # Configuration file for cluster-based BYOL analysis
 
 data:
-  input_path: "local_data/pieridae_output"  # Path to input data directory
-  output_path: "byol_results"               # Path to output results
+  input_path: "../../local_data/pieridae_output"  # Path to input data directory
+  output_path: "../../local_data/byol_results"    # Path to output results
 
 model:
   image_size: 150                          # Input image size
@@ -12,10 +12,10 @@ model:
   moving_average_decay: 0.99               # τ_base for EMA updates
 
 training:
-  num_epochs: 50                           # Number of training epochs
-  batch_size: 32                           # Training batch size (adjust for GPU memory)
+  num_epochs: 300                           # Number of training epochs
+  batch_size: 1024                           # Training batch size (adjust for GPU memory)
   learning_rate: 3e-4                      # Adam optimizer learning rate
-  save_interval: 10                        # Save checkpoint every N epochs
+  save_interval: 100                        # Save checkpoint every N epochs
   resume: true                             # Resume from checkpoint if available
 
 inference:
