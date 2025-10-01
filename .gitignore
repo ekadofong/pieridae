@@ -210,3 +210,9 @@ local_data/
 *.npz
 
 scripts/slurm*out
+settings.json
+*csv
+Untitled*ipynb
+.DS_Store
+*backup*
+classifications*
