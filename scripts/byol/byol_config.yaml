@@ -3,7 +3,7 @@ advanced:
   deterministic: false
   low_memory_mode: false
   normalize_images: false
-  random_seed: 42
+  random_seed: 28
   remove_outliers: false
 analysis:
   explained_variance_threshold: 0.95
@@ -32,12 +32,12 @@ cluster:
   scratch_base: /scratch/gpfs
   use_scratch: true
 data:
-  input_path: ../../local_data/pieridae_output
+  input_path: ../../local_data/pieridae_output/starlet/msorabove_v0
   output_path: ../../local_data/byol_results
 inference: 
   batch_size: 1024
 labels:  
-  classifications_file: ./classifications_kadofong_20250926.csv
+  classifications_file: ./classifications_kadofong_current.csv
   index_column: 0
   label_mapping:
     0: unclassified
@@ -58,8 +58,8 @@ model:
 training:
   batch_size: 1024
   learning_rate: 0.0003
-  num_epochs: 300
-  resume: true
+  num_epochs: 500
+  resume: false
   save_interval: 100
 visualization:
   create_plots: true

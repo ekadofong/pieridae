@@ -50,10 +50,10 @@ class BYOLMacOSAnalysis(BYOLClusterAnalysis):
         if self.device.type == 'mps':
             # MPS has memory limitations, reduce batch sizes
             original_batch_size = self.config['training']['batch_size']
-            self.config['training']['batch_size'] = min(16, original_batch_size)
+            self.config['training']['batch_size'] = min(128, original_batch_size)
 
             original_inf_batch_size = self.config['inference']['batch_size']
-            self.config['inference']['batch_size'] = min(32, original_inf_batch_size)
+            self.config['inference']['batch_size'] = min(128, original_inf_batch_size)
 
             if original_batch_size != self.config['training']['batch_size']:
                 self.logger.info(f"Adjusted training batch size for MPS: {original_batch_size} -> {self.config['training']['batch_size']}")

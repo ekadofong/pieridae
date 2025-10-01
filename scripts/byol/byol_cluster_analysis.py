@@ -94,7 +94,8 @@ class BYOLClusterAnalysis:
         """Load image data from pickle files"""
         self.logger.info("Loading image data...")
 
-        pattern = str(self.data_path / "starlet/starbursts_v0/M*/*i_results.pkl")
+        pattern = f"{self.data_path}/M*/*i_results.pkl"
+
         filenames = glob.glob(pattern)
 
         if not filenames:
@@ -480,7 +481,7 @@ class BYOLClusterAnalysis:
         try:
             from ekfplot import colors as ec
             # Define colors for each classification
-            classification_colors = ['lightgrey', 'tab:blue', 'C1', 'r', 'lime', 'magenta']
+            classification_colors = ['lightgrey', 'lightblue', 'C1', 'r', 'lime', 'magenta']
             cmap = ec.colormap_from_list(classification_colors, 'discrete')
         except ImportError:
             # Fallback if ekfplot not available
@@ -500,13 +501,13 @@ class BYOLClusterAnalysis:
 
         # UMAP plot
         if labels is not None:
-            scatter = axes[1].scatter(result['embeddings_umap'][labels==0, 0],
-                                    result['embeddings_umap'][labels==0, 1],                                    
-                                    alpha=1., s=3, c='lightgrey')
+            scatter = axes[1].scatter(result['embeddings_umap'][labels<=1, 0],
+                                    result['embeddings_umap'][labels<=1, 1],                                    
+                                    alpha=1., s=3, ec='lightgrey', fc='None')
             scatter = axes[1].scatter(result['embeddings_umap'][labels>0, 0],
                                     result['embeddings_umap'][labels>0, 1],
                                     cmap=cmap,
-                                    alpha=1., s=10, c=labels[labels>0], vmin=0)            
+                                    alpha=1., s=5, c=labels[labels>0], vmin=0)            
         else:
             scatter = axes[1].scatter(result['embeddings_umap'][:, 0],
                                     result['embeddings_umap'][:, 1],
@@ -531,7 +532,7 @@ class BYOLClusterAnalysis:
                     patches.append(mpatches.Patch(color=color, label=label))
 
             if patches:
-                axes[1].legend(handles=patches, loc='upper right', fontsize=8)
+                axes[1].legend(handles=patches, loc='upper right', fontsize=6)
 
         plt.tight_layout()
         plt.savefig(self.output_path / 'embeddings_comparison.png', dpi=300, bbox_inches='tight')
