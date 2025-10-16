@@ -1,0 +1,72 @@
+advanced:
+  clear_cache: true
+  deterministic: false
+  low_memory_mode: false
+  normalize_images: false
+  random_seed: 28
+  remove_outliers: false
+analysis:
+  explained_variance_threshold: 0.95
+  metric: euclidean
+  min_dist: 0.01
+  n_neighbors: 15
+  pca_components: 50
+  umap_components: 2
+cluster:
+  conda_env: merenv
+  cpu_job:
+    cpus_per_task: 16
+    mem: 128G
+    nodes: 1
+    partition: cpu
+    time: '2:00:00'
+  gpu_job:
+    cpus_per_task: 8
+    gres: gpu:1
+    mem: 64G
+    nodes: 1
+    partition: gpu
+    time: '4:00:00'
+  modules:
+  - anaconda3/2023.9
+  scratch_base: /scratch/gpfs
+  use_scratch: true
+data:
+  input_path: ../../local_data/pieridae_output/starlet/msorabove_v0
+  output_path: ../../local_data/dino_results
+inference:
+  batch_size: 512
+labels:
+  classifications_file: ./classifications_kadofong_current.csv
+  index_column: 0
+  minimum_labeled_neighbors: 8
+  label_mapping:
+    0: unclassified
+    1: undisturbed
+    2: ambiguous
+    3: merger
+    4: fragmentation
+    5: artifact
+logging:
+  console_output: true
+  level: INFO
+  save_logs: true
+model:
+  # DINOv2 model configuration
+  model_name: facebook/dinov2-base  # Options: dinov2-small (384), dinov2-base (768), dinov2-large (1024), dinov2-giant (1536)
+  image_size: 150
+  enable_finetuning: false  # Set to true to enable fine-tuning
+  # Fine-tuning parameters
+  finetuning:
+    learning_rate: 0.00001  # Learning rate for fine-tuning
+    num_epochs: 10  # Number of epochs to train
+    freeze_backbone: true  # Whether to freeze the backbone during fine-tuning
+    hidden_dim: 256  # Hidden dimension for classification head
+    dropout: 0.1  # Dropout rate in classification head
+visualization:
+  create_plots: true
+  dpi: 300
+  figsize:
+  - 12
+  - 8
+  plot_format: png
