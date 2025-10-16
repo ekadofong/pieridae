@@ -10,7 +10,7 @@ analysis:
   metric: euclidean
   min_dist: 0.01
   n_neighbors: 15
-  pca_components: 50
+  pca_components: 10
   umap_components: 2
 cluster:
   conda_env: merenv
@@ -36,9 +36,10 @@ data:
   output_path: ../../local_data/byol_results
 inference: 
   batch_size: 1024
-labels:  
+labels:
   classifications_file: ./classifications_kadofong_current.csv
   index_column: 0
+  minimum_labeled_neighbors: 5
   label_mapping:
     0: unclassified
     1: undisturbed

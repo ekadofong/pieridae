@@ -10,6 +10,7 @@ their IDs to a CSV file for further manual classification.
 
 import os
 import sys
+import gc
 import torch
 import numpy as np
 import yaml
@@ -67,10 +68,37 @@ def load_data(data_path: Path):
 
     print(f"📸 Found {len(filenames)} image files")
 
-    imgs = []
+    # First pass: count valid images and get image shape
+    print("🔍 Counting valid images...")
+    valid_files = []
+    img_shape = None
+
+    for fname in tqdm(filenames, desc="Validating files"):
+        # Check if all required files exist
+        g_file = fname.replace('_i_', '_g_')
+        i_file = fname
+
+        if os.path.exists(g_file) and os.path.exists(i_file):
+            if img_shape is None:
+                # Get shape from first valid image
+                with open(i_file, 'rb') as f:
+                    xf = pickle.load(f)
+                    img_shape = xf['image'].shape
+            valid_files.append(fname)
+
+    n_images = len(valid_files)
+    print(f"✅ Found {n_images} valid image sets")
+
+    if n_images == 0:
+        raise ValueError("No valid image files found")
+
+    # Pre-allocate arrays (avoids list->array conversion)
+    images = np.zeros((n_images, 3, img_shape[0], img_shape[1]), dtype=np.float32)
     img_names = []
 
-    for fname in tqdm(filenames, desc="Loading images"):
+    # Second pass: load images directly into pre-allocated array
+    idx = 0
+    for fname in tqdm(valid_files, desc="Loading images"):
         img = []
         for band in 'gi':
             current_filename = fname.replace('_i_', f'_{band}_')
@@ -81,15 +109,22 @@ def load_data(data_path: Path):
                     img.append(xf['image'])
                     if band == 'i':
                         img.append(xf['hf_image'])
+                    del xf  # Free pickle data immediately
             except FileNotFoundError:
                 print(f"⚠️  File not found: {current_filename}")
                 continue
 
         if len(img) == 3:  # Only add if we have all bands
-            imgs.append(np.array(img))
+            images[idx] = np.array(img)
             img_names.append(Path(fname).parent.name)
+            idx += 1
+            del img  # Free temporary list
 
-    images = np.array(imgs)
+    # Trim array if some files failed to load
+    if idx < n_images:
+        images = images[:idx]
+        print(f"⚠️  Loaded {idx} images (expected {n_images})")
+
     img_names = np.array(img_names)
 
     print(f"✅ Loaded {len(images)} images with shape: {images.shape}")
@@ -196,6 +231,8 @@ def extract_embeddings(learner, images, device, batch_size=128):
                     raise e
 
     embeddings = np.vstack(all_embeddings)
+    del all_embeddings  # Free memory immediately after vstacking
+    gc.collect()  # Force garbage collection
     print(f"✅ Extracted embeddings shape: {embeddings.shape}")
 
     return embeddings
@@ -273,7 +310,7 @@ def load_labels(config, img_names):
     return labels
 
 
-def estimate_labels_from_neighbors(pca_embeddings, labels, n_neighbors=50):
+def estimate_labels_from_neighbors(pca_embeddings, labels, n_neighbors=50, n_min=8):
     """
     Use k-nearest neighbors in PCA space to estimate labels
     Returns n_labels (count of labeled neighbors for each object)
@@ -306,19 +343,107 @@ def estimate_labels_from_neighbors(pca_embeddings, labels, n_neighbors=50):
     n_labels = np.sum(neighbor_labels > 0, axis=1)
 
     # Zero out probability labels for objects with too few labeled neighbors
-    prob_labels[n_labels < 5] = 0.
+    prob_labels[n_labels < n_min] = 0.
 
     print(f"✅ {(prob_labels > 0).any(axis=1).sum()} objects have auto-labels")
-    print(f"✅ {(n_labels < 5).sum()} objects have fewer than 5 labeled neighbors")
+    print(f"✅ {(n_labels < n_min).sum()} objects have fewer than {n_min} labeled neighbors")
 
     return n_labels, prob_labels
 
 
-def save_flagged_objects(img_names, n_labels, output_file):
+def iterative_label_estimation(pca_embeddings, labels, n_neighbors=50, n_min=8, prob_threshold=0.6, frag_threshold=0.1):
+    """
+    Iteratively estimate labels using k-nearest neighbors
+
+    First iteration: Add high-confidence auto-labels
+    Second iteration: Recalculate with expanded label set
+
+    Returns:
+        iterative_labels: Labels after adding auto-labels
+        n_labels_iter: Number of labeled neighbors after iteration
+        prob_labels_iter: Probability labels after iteration
+        stats: Dictionary with label counts at each stage
+    """
+    print("\n🔄 Starting iterative label estimation...")
+
+    # Count initial human labels
+    n_human = (labels > 0).sum()
+    print(f"📊 Human labels: {n_human}")
+
+    # First iteration: Get initial probability labels
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors, algorithm='ball_tree').fit(pca_embeddings)
+    distances, indices = nbrs.kneighbors(pca_embeddings)
+    distances[:, 0] = np.nan
+
+    neighbor_labels = labels[indices]
+    weights = np.where(neighbor_labels > 0, 1. / distances, 0.)
+    weights /= np.nansum(weights, axis=1).reshape(-1, 1)
+
+    prob_labels = np.zeros([pca_embeddings.shape[0], labels.max() + 1])
+    for ix in range(labels.max() + 1):
+        prob_labels[:, ix] = np.nansum(
+            np.where(neighbor_labels == ix, weights, 0), axis=1
+        )
+
+    n_labels = np.sum(neighbor_labels > 0, axis=1)
+    prob_labels[n_labels < n_min] = 0.
+
+    n_initial_auto = (prob_labels > 0).any(axis=1).sum()
+    print(f"📊 Initial auto-labels: {n_initial_auto} objects have auto-labels")
+
+    # Add high-confidence labels
+    iterative_labels = labels.copy()
+    n_labeled_before = (iterative_labels > 0).sum()
+
+    # Add labels where probability > threshold and enough labeled neighbors
+    additions = np.where(prob_labels[n_labels >= n_min] > prob_threshold)
+    new_labels = np.zeros_like(iterative_labels)
+    new_labels[additions[0]] = additions[1]
+
+    # Special case: Add fragmentation labels with lower threshold
+    new_labels[(prob_labels[:, 4] > frag_threshold) & (n_labels >= n_min)] = 4
+
+    # Only update unlabeled objects
+    iterative_labels[iterative_labels == 0] = new_labels[iterative_labels == 0]
+
+    n_added = (iterative_labels > 0).sum() - n_labeled_before
+    print(f"📊 Added {n_added} auto-labels in first iteration")
+    print(f"📊 Total labels after iteration: {(iterative_labels > 0).sum()}")
+
+    # Second iteration: Recalculate with expanded labels
+    print("\n🔄 Recalculating with expanded label set...")
+    neighbor_labels_iter = iterative_labels[indices]
+    weights_iter = np.where(neighbor_labels_iter > 0, 1. / distances, 0.)
+    weights_iter /= np.nansum(weights_iter, axis=1).reshape(-1, 1)
+
+    prob_labels_iter = np.zeros([pca_embeddings.shape[0], labels.max() + 1])
+    for ix in range(labels.max() + 1):
+        prob_labels_iter[:, ix] = np.nansum(
+            np.where(neighbor_labels_iter == ix, weights_iter, 0), axis=1
+        )
+
+    n_labels_iter = np.sum(neighbor_labels_iter > 0, axis=1)
+    prob_labels_iter[n_labels_iter < n_min] = 0.
+
+    n_final_auto = (prob_labels_iter > 0).any(axis=1).sum()
+    print(f"📊 After second iteration: {n_final_auto} objects have auto-labels")
+
+    stats = {
+        'n_human': n_human,
+        'n_initial_auto': n_initial_auto,
+        'n_added_iteration': n_added,
+        'n_total_after_iteration': (iterative_labels > 0).sum(),
+        'n_final_auto': n_final_auto
+    }
+
+    return iterative_labels, n_labels_iter, prob_labels_iter, stats
+
+
+def save_flagged_objects(img_names, n_labels, output_file, n_min=8):
     """Save object IDs with n_labels < 5 to CSV"""
 
     # Get objects with fewer than 5 labeled neighbors
-    flagged_mask = n_labels < 5
+    flagged_mask = n_labels < n_min
     flagged_objects = img_names[flagged_mask]
 
     # Create DataFrame
@@ -367,20 +492,27 @@ def main():
     if labels is None:
         raise ValueError("Could not load classification labels")
 
-    # Estimate labels from neighbors
-    n_labels, prob_labels = estimate_labels_from_neighbors(
-        pca_embeddings, labels, n_neighbors=50
+    # Get minimum labeled neighbors threshold from config
+    n_min = config.get('labels', {}).get('minimum_labeled_neighbors', 8)
+    print(f"\n📋 Using minimum_labeled_neighbors = {n_min} from config")
+
+    # Run iterative label estimation
+    iterative_labels, n_labels_iter, prob_labels_iter, stats = iterative_label_estimation(
+        pca_embeddings, labels, n_neighbors=50, n_min=n_min
     )
 
-    # Save flagged objects
+    # Save flagged objects (using iterative labels)
     output_file = config['data']['output_path'] / 'flagged_for_classification.csv'
-    flagged_objects = save_flagged_objects(img_names, n_labels, output_file)
+    flagged_objects = save_flagged_objects(img_names, n_labels_iter, output_file, n_min=n_min)
 
     print("\n" + "=" * 60)
     print("🎉 ANALYSIS COMPLETE")
     print("=" * 60)
     print(f"📊 Total objects: {len(img_names)}")
-    print(f"🏷️  Labeled objects: {(labels > 0).sum()}")
+    print(f"🏷️  Human labels: {stats['n_human']}")
+    print(f"🏷️  Auto-labels added (iteration 1): {stats['n_added_iteration']}")
+    print(f"🏷️  Total labels after iteration: {stats['n_total_after_iteration']}")
+    print(f"🏷️  Objects with auto-labels (iteration 2): {stats['n_final_auto']}")
     print(f"🚩 Flagged for classification: {len(flagged_objects)}")
     print(f"💾 Output: {output_file}")
 

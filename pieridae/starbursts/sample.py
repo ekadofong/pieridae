@@ -102,7 +102,9 @@ def load_sample (filename=None):
     masks = {'in_band':(in_band, 'in band spectroscopic redshift'), 
              'is_starburst':(is_starburst, 'is a Merian starburst'), 
              'is_msorabove':(is_msorabove, 'is at least at the SAGAbg SFS'),
-             'is_good':(is_good, '7.75<logM*<12 AND i_apercorr < 4 AND n540_apercorr < 4 AND HaEW > 5 AND OIIIEW > 5. AND int{p(z)} > 0.26')}
+             'is_good':(is_good, '7.75<logM*<12 AND i_apercorr < 4 AND n540_apercorr < 4 AND HaEW > 5 AND OIIIEW > 5. AND int{p(z)} > 0.26'),
+             'is_emitter':(is_emitter, 'EW(Ha)>5 Ang AND EW(OIII)>5 Ang')
+             }
     
     return catalog, masks
 
