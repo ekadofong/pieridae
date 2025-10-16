@@ -10,7 +10,7 @@ analysis:
   metric: euclidean
   min_dist: 0.01
   n_neighbors: 15
-  pca_components: 10
+  pca_components: 50
   umap_components: 2
 cluster:
   conda_env: merenv
@@ -33,13 +33,13 @@ cluster:
   use_scratch: true
 data:
   input_path: ../../local_data/pieridae_output/starlet/msorabove_v0
-  output_path: ../../local_data/byol_results
-inference: 
-  batch_size: 1024
+  output_path: ../../local_data/dino_results
+inference:
+  batch_size: 512
 labels:
   classifications_file: ./classifications_kadofong_current.csv
   index_column: 0
-  minimum_labeled_neighbors: 5
+  minimum_labeled_neighbors: 8
   label_mapping:
     0: unclassified
     1: undisturbed
@@ -52,16 +52,17 @@ logging:
   level: INFO
   save_logs: true
 model:
+  # DINOv2 model configuration
+  model_name: facebook/dinov2-base  # Options: dinov2-small (384), dinov2-base (768), dinov2-large (1024), dinov2-giant (1536)
   image_size: 150
-  moving_average_decay: 0.99
-  projection_hidden_size: 1024
-  projection_size: 128
-training:
-  batch_size: 1024
-  learning_rate: 0.0003
-  num_epochs: 500
-  resume: false
-  save_interval: 100
+  enable_finetuning: false  # Set to true to enable fine-tuning
+  # Fine-tuning parameters
+  finetuning:
+    learning_rate: 0.00001  # Learning rate for fine-tuning
+    num_epochs: 10  # Number of epochs to train
+    freeze_backbone: true  # Whether to freeze the backbone during fine-tuning
+    hidden_dim: 256  # Hidden dimension for classification head
+    dropout: 0.1  # Dropout rate in classification head
 visualization:
   create_plots: true
   dpi: 300

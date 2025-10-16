@@ -105,6 +105,7 @@ def load_sample (filename=None):
              'is_msorabove':(is_msorabove, 'is at least at the SAGAbg SFS'),
              'is_good':(is_good, '7.75<logM*<12 AND i_apercorr < 4 AND n540_apercorr < 4 AND HaEW > 5 AND OIIIEW > 5. AND int{p(z)} > 0.26'),
              'is_alosbms':(is_alosbms, 'is at least one sigma below the SAGAbg SFS')
+             'is_emitter':(is_emitter, 'EW(Ha)>5 Ang AND EW(OIII)>5 Ang')
              }
     
     return catalog, masks

@@ -1,0 +1,44 @@
+# FIRE2 Mock Image Generation Configuration
+# Configuration for generating random projection images from FIRE2 simulations
+
+# Simulation parameters
+simulation:
+  tag: m11b_res2100              # Galaxy identifier (m11b_res2100, m11d_res7100, etc.)
+  snapshot_id: 600               # Snapshot number to use
+  fire2_base_path: ../local_data/fire2/core/  # Path to FIRE2 data directory
+  particle_types:                # Particle types to include in projection
+    - star                       # Options: star, gas, dark
+
+# Projection parameters
+projection:
+  n_images: 100                  # Number of random projections to generate
+  image_size_kpc: 150            # Physical size of image in kpc
+  bin_width_kpc: 1.0             # Histogram bin size in kpc (1 kpc recommended)
+  center_on_host: true           # Center projection on host galaxy
+  max_distance_kpc: 100          # Only include particles within this radius from center
+  log_scale: true                # Apply log10 scaling to histogram values
+  log_min_value: 1.0             # Minimum value for log scaling (to avoid log(0))
+
+# Noise parameters
+noise:
+  add_noise: false               # Whether to add noise to images
+  noise_type: gaussian           # Type of noise: gaussian or poisson
+  gaussian_sigma: 0.1            # Standard deviation for Gaussian noise (fraction of mean)
+  gaussian_absolute: false       # If true, sigma is absolute; if false, relative to image mean
+  poisson_scale: 1.0             # Scaling factor for Poisson noise
+  noise_seed_offset: 1000        # Offset for noise random seed (seed = main_seed + offset + image_id)
+
+# Output parameters
+output:
+  output_dir: ../local_data/mock_images/  # Base directory for output
+  save_format: npy               # Format: npy, png, or both
+  save_metadata: true            # Save projection angles and parameters
+  normalize_images: false        # Normalize images to [0, 1] range
+  random_seed: 42                # Random seed for reproducibility
+  append_mode: false             # If true, append new images instead of overwriting
+
+# Advanced options
+advanced:
+  rotation_method: uniform       # Method for random rotations: uniform or fibonacci
+  cache_particle_data: true      # Cache loaded particle data for multiple projections
+  verbose: true                  # Print detailed progress information

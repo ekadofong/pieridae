@@ -1,0 +1,38 @@
+# FIRE2 Image Generation with Gaussian Noise
+# Example configuration for generating images with observational noise
+
+simulation:
+  tag: m11b_res2100
+  snapshot_id: 600
+  fire2_base_path: ../local_data/fire2/core/
+  particle_types:
+    - star
+
+projection:
+  n_images: 10000
+  image_size_pix: 150
+  bin_width_kpc: 2
+  center_on_host: true
+  max_distance_kpc: 100
+  log_scale: false
+  log_min_value: 1.0
+
+# Enable Gaussian noise to simulate observations
+noise:
+  add_noise: true
+  noise_type: gaussian
+  gaussian_sigma: 0.025            # 5% noise relative to image mean
+  gaussian_absolute: false        # Relative to mean (not absolute)
+  noise_seed_offset: 1000         # Ensures different noise for each image
+
+output:
+  output_dir: ../local_data/mock_images/
+  save_format: npy               # Save as both .npy and .png
+  save_metadata: true
+  normalize_images: false          # Normalize for PNG output
+  random_seed: 42
+
+advanced:
+  rotation_method: uniform
+  cache_particle_data: true
+  verbose: true

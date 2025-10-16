@@ -1,0 +1,33 @@
+# Test configuration for FIRE2 image generation
+# Generates only 3 images for testing purposes
+
+simulation:
+  tag: m11d_res7100
+  snapshot_id: 600
+  fire2_base_path: ../local_data/fire2/core/
+  particle_types:
+    - star
+
+projection:
+  n_images: 3                    # Just 3 images for testing
+  image_size_kpc: 150
+  bin_width_kpc: 1.0
+  center_on_host: true
+  max_distance_kpc: 100
+  log_scale: true
+  log_min_value: 1.0
+
+noise:
+  add_noise: false
+
+output:
+  output_dir: ../../local_data/mock_images/
+  save_format: npy
+  save_metadata: true
+  normalize_images: false
+  random_seed: 42
+
+advanced:
+  rotation_method: uniform
+  cache_particle_data: true
+  verbose: true

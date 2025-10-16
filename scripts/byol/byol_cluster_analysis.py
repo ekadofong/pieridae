@@ -49,12 +49,14 @@ class BYOLClusterAnalysis:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.logger = self._setup_logging()
 
-        # Setup paths
+        # Setup paths first (needed for logging)
         self.data_path = Path(config['data']['input_path'])
         self.output_path = Path(config['data']['output_path'])
         self.output_path.mkdir(parents=True, exist_ok=True)
+
+        # Setup logging after output directory is created
+        self.logger = self._setup_logging()
 
         # Initialize model components
         self.learner = None
@@ -92,7 +94,8 @@ class BYOLClusterAnalysis:
         """Load image data from pickle files"""
         self.logger.info("Loading image data...")
 
-        pattern = str(self.data_path / "starlet/starbursts_v0/M*/*i_results.pkl")
+        pattern = f"{self.data_path}/M*/*i_results.pkl"
+
         filenames = glob.glob(pattern)
 
         if not filenames:
@@ -136,15 +139,13 @@ class BYOLClusterAnalysis:
         transform1 = nn.Sequential(
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomRotation(degrees=180),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2),
-            transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),            
         )
 
         transform2 = nn.Sequential(
             transforms.RandomVerticalFlip(p=0.5),
             transforms.RandomRotation(degrees=180),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3),
-            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.3)
+            transforms.ColorJitter(brightness=0.3, contrast=0.3),            
         )
 
         # Base model
@@ -184,7 +185,7 @@ class BYOLClusterAnalysis:
 
         optimizer = Adam(
             self.learner.parameters(),
-            lr=self.config['training']['learning_rate']
+            lr=float(self.config['training']['learning_rate'])
         )
 
         # Setup checkpointing
@@ -194,11 +195,17 @@ class BYOLClusterAnalysis:
         # Resume from checkpoint if exists
         if checkpoint_path.exists() and self.config['training']['resume']:
             self.logger.info("Loading checkpoint...")
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
-            self.learner.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch'] + 1
-            self.logger.info(f"Resumed from epoch {start_epoch}")
+            try:
+                # Try with weights_only=False for our trusted checkpoint
+                checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+                self.learner.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                start_epoch = checkpoint['epoch'] + 1
+                self.logger.info(f"Resumed from epoch {start_epoch}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load checkpoint: {e}")
+                self.logger.info("Starting training from scratch...")
+                start_epoch = 0
 
         # Training loop
         num_epochs = self.config['training']['num_epochs']
@@ -249,7 +256,7 @@ class BYOLClusterAnalysis:
                 raise FileNotFoundError(f"Trained model not found: {model_path}")
 
             self.setup_model()
-            checkpoint = torch.load(model_path, map_location=self.device)
+            checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
             self.learner.load_state_dict(checkpoint['model_state_dict'])
 
         self.learner.eval()
@@ -429,7 +436,7 @@ class BYOLClusterAnalysis:
 
         # Load labels if available
         labels = None
-        label_file = Path('./classifications_kadofong_20250925.csv')
+        label_file = Path(self.config.get('labels', {}).get('classifications_file', './classifications_kadofong_20250926.csv'))
         if label_file.exists() and self.img_names is not None:
             try:
                 mergers = pd.read_csv(label_file, index_col=0)
@@ -461,7 +468,7 @@ class BYOLClusterAnalysis:
         axes[0,1].set_ylabel('Cumulative Explained Variance')
         axes[0,1].set_title('Cumulative Variance Explained')
         axes[0,1].grid(True, alpha=0.3)
-        axes[0,1].legend()
+        axes[0,1].legend(fontsize=8)
 
         plt.tight_layout()
         plt.savefig(self.output_path / 'pca_analysis.png', dpi=300, bbox_inches='tight')
@@ -470,29 +477,195 @@ class BYOLClusterAnalysis:
         # Create embedding comparison plot
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
+        # Define custom colormap for galaxy classifications
+        try:
+            from ekfplot import colors as ec
+            # Define colors for each classification
+            classification_colors = ['lightgrey', 'lightblue', 'C1', 'r', 'lime', 'magenta']
+            cmap = ec.colormap_from_list(classification_colors, 'discrete')
+        except ImportError:
+            # Fallback if ekfplot not available
+            import matplotlib.colors as mcolors
+            classification_colors = ['lightgrey', 'tab:blue', 'orange', 'red', 'lime', 'magenta']
+            cmap = mcolors.ListedColormap(classification_colors)
+
         # PCA plot
         axes[0].scatter(result['embeddings_pca'][:, 0],
                        result['embeddings_pca'][:, 1],
-                       alpha=0.6, s=20, c='grey' if labels is None else labels)
+                       cmap=cmap,
+                       alpha=1., s=10, c='grey' if labels is None else labels)
         axes[0].set_title('PCA (First 2 Components)')
         axes[0].set_xlabel('PC1')
         axes[0].set_ylabel('PC2')
         axes[0].grid(True, alpha=0.3)
 
         # UMAP plot
-        axes[1].scatter(result['embeddings_umap'][:, 0],
-                       result['embeddings_umap'][:, 1],
-                       alpha=0.6, s=20, c='grey' if labels is None else labels)
+        if labels is not None:
+            scatter = axes[1].scatter(result['embeddings_umap'][labels<=1, 0],
+                                    result['embeddings_umap'][labels<=1, 1],                                    
+                                    alpha=1., s=3, ec='lightgrey', fc='None')
+            scatter = axes[1].scatter(result['embeddings_umap'][labels>0, 0],
+                                    result['embeddings_umap'][labels>0, 1],
+                                    cmap=cmap,
+                                    alpha=1., s=5, c=labels[labels>0], vmin=0)            
+        else:
+            scatter = axes[1].scatter(result['embeddings_umap'][:, 0],
+                                    result['embeddings_umap'][:, 1],
+                                    cmap=cmap,
+                                    alpha=1., s=10, c='grey' if labels is None else labels)
         axes[1].set_title('PCA + UMAP')
         axes[1].set_xlabel('UMAP 1')
         axes[1].set_ylabel('UMAP 2')
         axes[1].grid(True, alpha=0.3)
+
+        # Add colorbar with classification labels if labels are provided
+        if labels is not None:
+            import matplotlib.patches as mpatches
+            legend_labels = {0:'unlabeled', 1:'undisturbed', 2:'ambiguous',
+                           3:'merger', 4:'fragmentation', 5:'artifact'}
+            legend_colors = ['lightgrey', 'tab:blue', 'C1', 'r', 'lime', 'magenta']
+
+            # Create legend patches
+            patches = []
+            for i, (label, color) in enumerate(zip(legend_labels.values(), legend_colors)):
+                if i in labels:  # Only show labels that exist in the data
+                    patches.append(mpatches.Patch(color=color, label=label))
+
+            if patches:
+                axes[1].legend(handles=patches, loc='upper right', fontsize=6)
 
         plt.tight_layout()
         plt.savefig(self.output_path / 'embeddings_comparison.png', dpi=300, bbox_inches='tight')
         plt.close()
 
         self.logger.info("Visualizations saved")
+
+    def compute_labeled_distance_metrics(self) -> Dict[str, Any]:
+        """Compute average intra-class distances in UMAP space, normalized by overall average distance"""
+        self.logger.info("Computing labeled distance metrics...")
+
+        # Load UMAP results if not already available
+        results_path = self.output_path / 'dimensionality_reduction_results.pkl'
+        if not results_path.exists():
+            self.logger.error("Dimensionality reduction results not found. Run analysis first.")
+            return {}
+
+        with open(results_path, 'rb') as f:
+            result = pickle.load(f)
+
+        umap_embeddings = result['embeddings_umap']
+
+        # Load labels if available
+        labels = None
+        label_file = Path(self.config.get('labels', {}).get('classifications_file', './classifications_kadofong_20250926.csv'))
+        if label_file.exists() and self.img_names is not None:
+            try:
+                import pandas as pd
+                mergers = pd.read_csv(label_file, index_col=0)
+                labels = mergers.reindex(self.img_names)
+                labels = labels.replace(np.nan, 0).values.flatten().astype(int)
+                self.logger.info("Loaded classification labels for distance metrics")
+            except Exception as e:
+                self.logger.warning(f"Could not load labels: {e}")
+                return {}
+        else:
+            self.logger.warning("No classification labels found for distance metrics")
+            return {}
+
+        # Define label meanings
+        label_meanings = {
+            0: "unclassified", 1: "undisturbed", 2: "ambiguous",
+            3: "merger", 4: "fragmentation", 5: "artifact"
+        }
+
+        # Compute pairwise distances in UMAP space
+        from scipy.spatial.distance import pdist, squareform
+        distances = squareform(pdist(umap_embeddings, metric='euclidean'))
+
+        # Compute overall average distance (for normalization)
+        # Use upper triangle to avoid double counting and diagonal
+        upper_triangle_indices = np.triu_indices(distances.shape[0], k=1)
+        overall_avg_distance = np.median(distances[upper_triangle_indices])
+
+        # Compute intra-class distances for each label (excluding 0 and 1)
+        metrics = {
+            'overall_avg_distance': overall_avg_distance,
+            'intra_class_distances': {},
+            'normalized_intra_class_distances': {},
+            'class_counts': {},
+            'label_meanings': label_meanings
+        }
+
+        for label_val in [2, 3, 4, 5]:  # Exclude 0 (unclassified) and 1 (undisturbed)
+            if label_val in labels:
+                # Get indices for this label
+                class_indices = np.where(labels == label_val)[0]
+
+                if len(class_indices) > 1:  # Need at least 2 objects for distance
+                    # Extract distances between objects of same class
+                    class_distances = distances[np.ix_(class_indices, class_indices)]
+
+                    # Get upper triangle (avoid diagonal and double counting)
+                    upper_indices = np.triu_indices(class_distances.shape[0], k=1)
+                    intra_class_dists = class_distances[upper_indices]
+
+                    avg_intra_distance = np.median(intra_class_dists)
+                    normalized_distance = avg_intra_distance / overall_avg_distance
+
+                    metrics['intra_class_distances'][label_val] = {
+                        'mean': float(avg_intra_distance),
+                        'std': float(np.std(intra_class_dists)),
+                        'median': float(np.median(intra_class_dists)),
+                        'min': float(np.min(intra_class_dists)),
+                        'max': float(np.max(intra_class_dists)),
+                        'num_pairs': len(intra_class_dists)
+                    }
+
+                    metrics['normalized_intra_class_distances'][label_val] = {
+                        'mean_normalized': float(normalized_distance),
+                        'label': label_meanings[label_val]
+                    }
+
+                    metrics['class_counts'][label_val] = len(class_indices)
+
+                    self.logger.info(f"Class {label_val} ({label_meanings[label_val]}): "
+                                   f"{len(class_indices)} objects, "
+                                   f"avg distance = {avg_intra_distance:.4f}, "
+                                   f"normalized = {normalized_distance:.4f}")
+                else:
+                    self.logger.info(f"Class {label_val} ({label_meanings[label_val]}): "
+                                   f"only {len(class_indices)} objects (need ≥2 for distance)")
+                    metrics['class_counts'][label_val] = len(class_indices)
+
+        # Compute summary statistics
+        if metrics['normalized_intra_class_distances']:
+            normalized_values = [v['mean_normalized'] for v in metrics['normalized_intra_class_distances'].values()]
+            metrics['summary'] = {
+                'mean_normalized_distance': float(np.mean(normalized_values)),
+                'std_normalized_distance': float(np.std(normalized_values)),
+                'min_normalized_distance': float(np.min(normalized_values)),
+                'max_normalized_distance': float(np.max(normalized_values))
+            }
+
+        # Save metrics
+        metrics_path = self.output_path / 'labeled_distance_metrics.json'
+        with open(metrics_path, 'w') as f:
+            json.dump(metrics, f, indent=2)
+
+        # Also save as pickle for easier loading
+        metrics_pickle_path = self.output_path / 'labeled_distance_metrics.pkl'
+        with open(metrics_pickle_path, 'wb') as f:
+            pickle.dump(metrics, f)
+
+        self.logger.info(f"Distance metrics saved to {metrics_path}")
+
+        # Print summary
+        if 'summary' in metrics:
+            self.logger.info(f"Summary - Mean normalized intra-class distance: "
+                           f"{metrics['summary']['mean_normalized_distance']:.4f} ± "
+                           f"{metrics['summary']['std_normalized_distance']:.4f}")
+
+        return metrics
 
     def run_full_pipeline(self) -> None:
         """Run the complete analysis pipeline"""
@@ -516,15 +689,29 @@ class BYOLClusterAnalysis:
         # Visualizations
         self.create_visualizations()
 
+        # Labeled distance metrics
+        self.compute_labeled_distance_metrics()
+
         self.logger.info("Full pipeline completed successfully")
 
-        # Save summary
+        # Save summary (convert Path objects to strings for JSON serialization)
+        def convert_paths_to_strings(obj):
+            """Recursively convert Path objects to strings for JSON serialization"""
+            if isinstance(obj, Path):
+                return str(obj)
+            elif isinstance(obj, dict):
+                return {key: convert_paths_to_strings(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_paths_to_strings(item) for item in obj]
+            else:
+                return obj
+
         summary = {
             'completion_time': datetime.now().isoformat(),
             'num_images': len(self.images),
             'embedding_dimension': self.embeddings.shape[1],
             'device_used': str(self.device),
-            'config': self.config
+            'config': convert_paths_to_strings(self.config)
         }
 
         with open(self.output_path / 'analysis_summary.json', 'w') as f:
@@ -541,7 +728,7 @@ def create_default_config() -> Dict[str, Any]:
     """Create default configuration"""
     return {
         'data': {
-            'input_path': 'local_data/pieridae_output',
+            'input_path': '../../local_data/pieridae_output',
             'output_path': 'byol_results'
         },
         'model': {
@@ -588,7 +775,12 @@ def main():
     if args.config:
         config = load_config(args.config)
     else:
-        config = create_default_config()
+        # Try to load byol_config.yaml from script directory first
+        default_config_path = Path(__file__).parent / 'byol_config.yaml'
+        if default_config_path.exists():
+            config = load_config(str(default_config_path))
+        else:
+            config = create_default_config()
 
     # Override config with command line arguments
     if args.data_path:
@@ -621,6 +813,8 @@ def main():
         analysis.compute_pca_umap()
         analysis.compute_similarity_analysis()
         analysis.create_visualizations()
+        analysis.compute_labeled_distance_metrics()
+
 
     print("Analysis completed successfully!")
 
