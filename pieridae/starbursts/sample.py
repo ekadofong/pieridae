@@ -83,7 +83,7 @@ def load_sample (filename=None):
     catalog['lineratio'] = catalog.loc[:, 'L_OIII']/catalog.loc[:, 'L_Ha']
     catalog['pz'] = catalog['pz1']+catalog['pz2']+catalog['pz3']+catalog['pz4']
 
-    is_inmassrange = (catalog['logmass']>7.75)&(catalog['logmass']<12.)&(catalog['i_apercorr']<4.)&(catalog['n540_apercorr']<4.)
+    is_inmassrange = (catalog['logmass']>7.75)&(catalog['logmass']<12.)#&(catalog['i_apercorr']<4.)&(catalog['n540_apercorr']<4.)
     is_emitter = (catalog['haew']>5.)&(catalog['oiiiew']>5.)
     in_band = (catalog['z_spec']>0.05)&(catalog['z_spec']<0.11)
     zphot_select = catalog['pz']>0.26
@@ -100,10 +100,11 @@ def load_sample (filename=None):
     has_zspec = np.isfinite(catalog['z_spec'])
     in_band = (catalog['z_spec']>0.05)&(catalog['z_spec']<0.11)    
     
-    masks = {'in_band':(in_band, 'in band spectroscopic redshift'), 
+    masks = {
+             'in_band':(in_band, 'in band spectroscopic redshift'), 
              'is_starburst':(is_starburst, 'is a Merian starburst'), 
              'is_msorabove':(is_msorabove, 'is at least at the SAGAbg SFS'),
-             'is_good':(is_good, '7.75<logM*<12 AND i_apercorr < 4 AND n540_apercorr < 4 AND HaEW > 5 AND OIIIEW > 5. AND int{p(z)} > 0.26'),
+             'is_good':(is_good, '7.75<logM*<12 AND int{p(z)} > 0.26'),            
              'is_alosbms':(is_alosbms, 'is at least one sigma below the SAGAbg SFS')
              'is_emitter':(is_emitter, 'EW(Ha)>5 Ang AND EW(OIII)>5 Ang')
              }
