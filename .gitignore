@@ -216,3 +216,9 @@ Untitled*ipynb
 .DS_Store
 *backup*
 classifications*
+scripts/figure_generation/figure_data/
+scripts/figure_generation/*.pdf
+*pkl
+*pt
+merger_analysis/output/
+scripts/byol/byol_simulated_results/
