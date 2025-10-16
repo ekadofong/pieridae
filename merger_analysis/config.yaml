@@ -48,7 +48,7 @@ labels:
   minimum_labeled_neighbors: 5
   minimum_labeled_neighbors_for_autoprop: 15
   prob_threshold: 0.9
-  frag_threshold: 0.4
+  frag_threshold: 0.25
 
   # Label meanings
   label_mapping:

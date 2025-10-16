@@ -1,0 +1,124 @@
+# Figure Generation Configuration
+# Configuration for creating galaxy example figures with BYOL analysis
+
+# Catalog parameters
+catalog:
+  # Path to main Merian catalog
+  catalog_file: /Users/kadofong/work/projects/merian/local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet
+
+# Cutout data paths
+cutout_data:
+  # Local directory for storing cutout FITS files
+  local_path: ../local_data/cutouts/
+
+  # Remote cluster information
+  cluster:
+    hostname: tiger3-sumire.princeton.edu
+    # Remote paths to try (in order)
+    remote_paths:
+      - /home/kadofong/merian/pieridae/local_data/starbursts_v0
+      - /home/kadofong/merian/pieridae/local_data/msorabove_v0
+
+# Galaxy selection parameters
+galaxy_selection:
+  # Selection mode: 'lowmass' or 'highmass'
+  mode: lowmass
+
+  # Mass threshold for low-mass selection (log10(M*/Msun))
+  mass_threshold: 9.0
+
+  # Probability thresholds for each class
+  prob_thresholds:
+    fragmented: 0.5        # prob_labels[:,4] > threshold
+    merger: 0.3            # prob_labels[:,3] > threshold
+    possible_merger: 0.0   # (prob_labels[:,3] + prob_labels[:,2]) > prob_labels[:,1]
+    undisturbed: 0.5       # prob_labels[:,1] > threshold
+
+  # Number of examples to select for each category
+  n_examples:
+    merger: 2
+    undisturbed: 1
+    fragmented: 1
+
+  # Neighbor parameters for probability calculation
+  n_neighbors: 50
+  minimum_labeled_neighbors: 5
+  minimum_labeled_neighbors_for_autoprop: 15
+
+  # Random seed for reproducible galaxy selection
+  random_seed: 42
+
+  # Pre-selected galaxy indices (optional - overrides random selection)
+  # Format: {mode: [merger1, merger2, undisturbed, fragmented]}
+  preselected:
+    lowmass: [11063, 11896, 7554, 9902]
+    highmass: [9142, 8831, 7258, 3876]
+
+# Figure output parameters
+figure_output:
+  # Directory for saving figures
+  output_dir: ../figures/
+
+  # Figure format
+  format: pdf
+
+  # DPI for raster formats
+  dpi: 150
+
+  # Figure dimensions
+  figsize:
+    width: 8
+    height_per_galaxy: 2.5  # Total height = height_per_galaxy * n_galaxies
+
+  # Spacing
+  wspace: -0.17
+  hspace: 0.05
+
+  # Filename pattern (mode will be inserted)
+  filename_pattern: "galaxy_examples_{mode}.pdf"
+
+# Visualization parameters
+visualization:
+  # Bands for RGB composite
+  rgb_bands:
+    r: r
+    g: N708
+    b: i
+
+  # Lupton RGB parameters
+  lupton:
+    Q: 3
+    stretch: 2.0
+
+  # Low surface brightness visualization
+  lsb:
+    colormap: Greys
+    norm: SymLogNorm
+    linthresh: 0.1
+
+  # High-frequency (starlet) visualization
+  hf:
+    colormap: magma
+    q: 0.005  # Quantile for scaling
+
+  # Text labels
+  labels:
+    fontsize: 10
+    fontsize_header: 11
+    fontsize_title: 12
+    bordercolor: w
+    borderwidth: 3
+    textcolor: k
+
+  # Column headers
+  headers:
+    col0: ""  # Empty for first column (class labels go here)
+    col1: "HSC i-band (LSB)"
+    col2: "HF feature reconstruction"
+
+  # Row labels (class descriptions)
+  row_labels:
+    merger: "Likely merger"
+    ambiguous: "Likely ambiguous"
+    undisturbed: "Likely undisturbed"
+    fragmented: "Likely fragmented"
