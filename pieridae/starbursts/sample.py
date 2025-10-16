@@ -105,7 +105,7 @@ def load_sample (filename=None):
              'is_starburst':(is_starburst, 'is a Merian starburst'), 
              'is_msorabove':(is_msorabove, 'is at least at the SAGAbg SFS'),
              'is_good':(is_good, '7.75<logM*<12 AND int{p(z)} > 0.26'),            
-             'is_alosbms':(is_alosbms, 'is at least one sigma below the SAGAbg SFS')
+             'is_alosbms':(is_alosbms, 'is at least one sigma below the SAGAbg SFS'),
              'is_emitter':(is_emitter, 'EW(Ha)>5 Ang AND EW(OIII)>5 Ang')
              }
     
