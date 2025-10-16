@@ -157,7 +157,7 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             # Reconstruct image and create high-frequency residual
             im_recon = imstats.inverse_starlet_transform(im_recon, gen2=use_gen2)
             hf_image = bbmb.image[band] - im_recon
-            hf_image = hf_image - ndimage.median_filter(hf_image, size=20)
+            hf_image = hf_image - ndimage.median_filter(hf_image, size=20)            
             hf_image = np.where(sources > 0, vm, hf_image)
             
             # Estimate noise in high-frequency image
@@ -325,10 +325,11 @@ def process_starlet_analysis(target, catalog, dirname, output_dir):
             # Save results dictionary with feature map, coefficients, and Sersic parameters
             results_dict = {
                 #'feature_map': features,
-                'image':bbmb.image[band],
+                'image':np.where(sources==0, bbmb.image[band], vm),
+                
                 'hf_image':hf_image,
-                'ridge_coefficients': [rout[0] for rout in ridge_stats],
-                'sersic_parameters': list(zip(csersic.param_names, csersic.parameters)),
+                #'ridge_coefficients': [rout[0] for rout in ridge_stats],
+                #'sersic_parameters': list(zip(csersic.param_names, csersic.parameters)),
                 'absmag_r':absmag_r,
                 'logmass_adjusted':logmstar_adjusted,
             }

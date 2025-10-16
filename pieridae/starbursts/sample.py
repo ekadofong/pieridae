@@ -95,6 +95,7 @@ def load_sample (filename=None):
     sigma = 0.22*z + 0.38
     is_starburst = catalog['L_Ha'] > calibrations.SFR2LHa(10.**(alpha * (catalog['logmass'] - 8.5) + sfr0 + 1.5*sigma))
     is_msorabove = catalog['L_Ha'] > calibrations.SFR2LHa(10.**(alpha * (catalog['logmass'] - 8.5) + sfr0))
+    is_alosbms = catalog['L_Ha'] > calibrations.SFR2LHa(10.**(alpha * (catalog['logmass'] - 8.5) + sfr0 - sigma))
     
     has_zspec = np.isfinite(catalog['z_spec'])
     in_band = (catalog['z_spec']>0.05)&(catalog['z_spec']<0.11)    
@@ -102,7 +103,9 @@ def load_sample (filename=None):
     masks = {'in_band':(in_band, 'in band spectroscopic redshift'), 
              'is_starburst':(is_starburst, 'is a Merian starburst'), 
              'is_msorabove':(is_msorabove, 'is at least at the SAGAbg SFS'),
-             'is_good':(is_good, '7.75<logM*<12 AND i_apercorr < 4 AND n540_apercorr < 4 AND HaEW > 5 AND OIIIEW > 5. AND int{p(z)} > 0.26')}
+             'is_good':(is_good, '7.75<logM*<12 AND i_apercorr < 4 AND n540_apercorr < 4 AND HaEW > 5 AND OIIIEW > 5. AND int{p(z)} > 0.26'),
+             'is_alosbms':(is_alosbms, 'is at least one sigma below the SAGAbg SFS')
+             }
     
     return catalog, masks
 
