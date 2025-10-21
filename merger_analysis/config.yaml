@@ -15,7 +15,7 @@ model:
 
 # Training parameters
 training:
-  num_epochs: 1000
+  num_epochs: 10000
   batch_size: 1024
   learning_rate: 0.0003
   save_interval: 100
@@ -46,8 +46,8 @@ labels:
   # K-NN label propagation
   n_neighbors: 50
   minimum_labeled_neighbors: 5
-  minimum_labeled_neighbors_for_autoprop: 15
-  prob_threshold: 0.9
+  minimum_labeled_neighbors_for_autoprop: 10
+  prob_threshold: 0.7
   frag_threshold: 0.25
 
   # Label meanings

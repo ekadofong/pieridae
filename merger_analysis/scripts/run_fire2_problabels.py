@@ -195,11 +195,10 @@ def recompute_pca(
     if 'analysis' not in temp_config:
         temp_config['analysis'] = {}
 
-    # Override PCA settings
+    # Override PCA settings ONLY if explicitly specified
     if n_components is not None:
         temp_config['analysis']['pca_components'] = n_components
-    else:
-        temp_config['analysis']['pca_components'] = None  # Force auto-selection
+    # If n_components is None, keep the existing config value (don't override)
 
     temp_config['analysis']['explained_variance_threshold'] = variance_threshold
 

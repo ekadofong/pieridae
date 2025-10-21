@@ -751,6 +751,7 @@ def create_visualizations(
     axes[0, 0].grid(True, alpha=0.3)
 
     # 2. PCA with predicted labels
+    print(f'PCA embeddings shape: {embeddings_pca.shape}')
     for class_id in range(n_classes):
         mask = predicted_labels == class_id
         axes[0, 1].scatter(

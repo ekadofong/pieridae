@@ -105,9 +105,11 @@ class BYOLModelManager:
         """Setup a default logger if none provided"""
         logger = logging.getLogger('byol_model_manager')
         logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(handler)
+        # Only add handler if none exist to avoid duplicates
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
         return logger
 
     def _setup_device(self) -> torch.device:
@@ -459,9 +461,11 @@ class EmbeddingAnalyzer:
         """Setup a default logger if none provided"""
         logger = logging.getLogger('embedding_analyzer')
         logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(handler)
+        # Only add handler if none exist to avoid duplicates
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
         return logger
 
     def compute_pca(
@@ -500,6 +504,7 @@ class EmbeddingAnalyzer:
             n_components = self.config['analysis'].get('pca_components')
 
         if n_components is None:
+            self.logger.info("Automatically selecting N(PCA)")
             # Auto-determine from explained variance threshold
             pca_full = PCA()
             pca_full.fit(embeddings_scaled)
@@ -631,9 +636,11 @@ class LabelPropagation:
         """Setup a default logger if none provided"""
         logger = logging.getLogger('label_propagation')
         logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(handler)
+        # Only add handler if none exist to avoid duplicates
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
         return logger
 
     def fit_neighbors(
@@ -696,6 +703,7 @@ class LabelPropagation:
         # Compute weights based on inverse distance, only for labeled neighbors
         weights = np.where(neighbor_labels > 0, 1. / self.distances, 0.)
         weights /= np.nansum(weights, axis=1).reshape(-1, 1)
+        #print(f'W SHAPE: {weights.shape}')
 
         # Compute probability labels for each class
         n_classes = labels.max() + 1
@@ -718,7 +726,6 @@ class LabelPropagation:
             f"{(n_labels < self.n_min).sum()} objects have fewer than "
             f"{self.n_min} labeled neighbors"
         )
-
         return prob_labels, n_labels
 
     def iterative_propagation(
@@ -892,9 +899,11 @@ class SimulatedGalaxyGenerator:
         """Setup a default logger if none provided"""
         logger = logging.getLogger('simulated_galaxy_generator')
         logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        logger.addHandler(handler)
+        # Only add handler if none exist to avoid duplicates
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(handler)
         return logger
 
     def generate_disk(self) -> np.ndarray:
