@@ -222,3 +222,5 @@ scripts/figure_generation/*.pdf
 *pt
 merger_analysis/output/
 scripts/byol/byol_simulated_results/
+merger_analysis/figures
+merger_analysis/figure_generation/figure_data
