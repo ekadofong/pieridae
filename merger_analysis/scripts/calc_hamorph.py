@@ -606,7 +606,7 @@ def main():
                 return_morph=config['output']['return_morph']
             )
             n_success += 1
-        except KeyboardInterrupt as e:
+        except Exception as e:
             logger.error(f"Failed on index {i} (object {object_id}): {str(e)}")
             n_failed += 1
             continue
