@@ -1,0 +1,68 @@
+# H-alpha Morphology Analysis Configuration
+# Configuration for measuring morphology in H-alpha and z-band images
+
+# Catalog parameters
+catalog:
+  # Path to main Merian catalog
+  catalog_file: /Users/kadofong/work/projects/merian/local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet
+
+  # Catalog mask to apply (from sample.load_sample masks dictionary)
+  mask_name: is_good
+
+# Cutout data paths
+cutout_data:
+  # Path to cutout directory containing hsc/ and merian/ subdirectories
+  # NOTE: By default, the script will only process galaxies that have cutouts
+  # in this directory (checks for HSC-g and N708 files). Use --skip-cutout-check
+  # to disable this filtering.
+  image_path: /Users/kadofong/work/projects/merian/pieridae/local_data/test_cutout
+
+# Analysis parameters
+analysis:
+  # H-alpha image generation method
+  # Options: 'zscale', 'plaw_pixbypix', 'ri_avg'
+  ha_im_method: plaw_pixbypix
+
+  # Bands to use for powerlaw continuum fit (used in zscale method)
+  # Options: 'riz', 'griz', etc.
+  plawbands: riz
+
+  # Apply post-smoothing to H-alpha image (plaw_pixbypix method only)
+  post_smooth: false
+
+# Output parameters
+output:
+  # Directory for saving morphology measurements (.npy files)
+  save_dir: /Users/kadofong/work/projects/merian/pieridae/merger_analysis/local_data/hamorph/
+
+  # Save individual morphology results as .npy files
+  save_results: true
+
+  # Return morphology objects from function (for interactive use)
+  return_morph: false
+
+# Processing options
+processing:
+  # Object IDs to skip (if they cause errors)
+  skip_objects:
+    - 3242459790311478372  # Known problematic object
+
+  # Number of chunks for SLURM array jobs
+  # Only used if SLURM_ARRAY_TASK_ID environment variable is set
+  n_chunks: 50
+
+  # Verbosity level
+  verbose: true
+
+# Advanced options
+advanced:
+  # PSF matching parameters
+  psf_matching:
+    w_type: cosine           # Window type for PSF matching
+    cbell_alpha: 0.5         # Campbell-Barton alpha parameter
+    verbose: false           # Print PSF matching details
+
+  # Segmentation map parameters
+  segmap:
+    detection_threshold: 1.5  # Threshold for source detection (sigma)
+    min_area: 5               # Minimum area for detected sources (pixels)
