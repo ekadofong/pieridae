@@ -27,13 +27,6 @@ galaxy_selection:
   # Mass threshold for low-mass selection (log10(M*/Msun))
   mass_threshold: 9.0
 
-  # Probability thresholds for each class
-  prob_thresholds:
-    fragmented: 0.5        # prob_labels[:,4] > threshold
-    merger: 0.3            # prob_labels[:,3] > threshold
-    possible_merger: 0.0   # (prob_labels[:,3] + prob_labels[:,2]) > prob_labels[:,1]
-    undisturbed: 0.5       # prob_labels[:,1] > threshold
-
   # Number of examples to select for each category
   n_examples:
     merger: 2
@@ -114,11 +107,11 @@ visualization:
   headers:
     col0: ""  # Empty for first column (class labels go here)
     col1: "HSC i-band (LSB)"
-    col2: "HF feature reconstruction"
+    col2: "HF substructure image"
 
   # Row labels (class descriptions)
   row_labels:
     merger: "Likely merger"
-    ambiguous: "Likely ambiguous"
-    undisturbed: "Likely undisturbed"
+    ambiguous: "Ambiguous morphology"
+    undisturbed: "Undisturbed"
     fragmented: "Likely fragmented"

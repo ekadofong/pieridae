@@ -4,7 +4,7 @@
 # Data paths
 data:
   input_path: ../../local_data/pieridae_output/starlet/msorabove_v0
-  output_path: ../output/fiducial
+  output_path: ../output/notraining_00
 
 # Model architecture
 model:
@@ -15,7 +15,7 @@ model:
 
 # Training parameters
 training:
-  num_epochs: 1000
+  num_epochs: 0
   batch_size: 1024
   learning_rate: 0.0003
   save_interval: 100
@@ -28,7 +28,7 @@ inference:
 # Dimensionality reduction
 analysis:
   # PCA settings
-  pca_components: 20  # null for automatic selection
+  pca_components: 10  # null for automatic selection
   explained_variance_threshold: 0.95
 
   # UMAP settings
@@ -47,9 +47,8 @@ labels:
   n_neighbors: 50
   minimum_labeled_neighbors: 5
   minimum_labeled_neighbors_for_autoprop: 10
-  prob_threshold: 0.5
+  prob_threshold: 0.7
   frag_threshold: 0.25
-  merger_threshold: 0.4
 
   # Label meanings
   label_mapping:

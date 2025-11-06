@@ -3,8 +3,8 @@
 
 # Data paths
 data:
-  input_path: ../../local_data/pieridae_output/starlet/msorabove_v0
-  output_path: ../output/fiducial
+  input_path: ../../local_data/pieridae_output/starlet/massive_galaxies
+  output_path: ../output/galaxy_zoo/
 
 # Model architecture
 model:
@@ -40,25 +40,22 @@ analysis:
 # Label propagation
 labels:
   # Classification file
-  classifications_file: ../../../quick_projects/vizinspect/scripts/classifications_kadofong_current.csv
+  classifications_file: ../local_data/galaxy_zoo_classifications/classifications.csv
   index_column: 0
 
   # K-NN label propagation
-  n_neighbors: 50
+  n_neighbors: 100
   minimum_labeled_neighbors: 5
   minimum_labeled_neighbors_for_autoprop: 10
-  prob_threshold: 0.5
+  prob_threshold: 0.7
   frag_threshold: 0.25
-  merger_threshold: 0.4
 
   # Label meanings
   label_mapping:
     0: unclassified
-    1: undisturbed
-    2: ambiguous
-    3: merger
-    4: fragmentation
-    5: artifact
+    1: not_eod
+    2: edgeon
+    3: bulge
 
 # Visualization
 visualization:

@@ -2,14 +2,14 @@
 # Example configuration for generating images with observational noise
 
 simulation:
-  tag: m11b_res2100
-  snapshot_id: 600
+  tag: m11d_res7100
+  snapshot_id: 400
   fire2_base_path: ../local_data/fire2/core/
   particle_types:
     - star
 
 projection:
-  n_images: 10000
+  n_images: 1000
   image_size_pix: 150
   bin_width_kpc: 2
   center_on_host: true
@@ -21,7 +21,7 @@ projection:
 noise:
   add_noise: true
   noise_type: gaussian
-  gaussian_sigma: 0.025            # 5% noise relative to image mean
+  gaussian_sigma: 0.05            # 5% noise relative to image mean
   gaussian_absolute: false        # Relative to mean (not absolute)
   noise_seed_offset: 1000         # Ensures different noise for each image
 
