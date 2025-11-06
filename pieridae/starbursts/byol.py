@@ -201,7 +201,8 @@ class BYOLModelManager:
     def train_model(
         self,
         images: np.ndarray,
-        resume: bool = True
+        resume: bool = True,
+        patience_limit: int = 20
     ) -> None:
         """
         Train BYOL model with checkpointing.
@@ -249,7 +250,10 @@ class BYOLModelManager:
         num_epochs = self.config['training']['num_epochs']
         save_interval = self.config['training']['save_interval']
         batch_size = self.config['training']['batch_size']
-
+        
+        prev_loss = []
+        stop = 0
+        
         for epoch in tqdm(range(start_epoch, num_epochs), desc="Training BYOL"):
             try:
                 # Sample random batch
@@ -270,12 +274,20 @@ class BYOLModelManager:
 
                 optimizer.step()
                 self.learner.update_moving_average()
+                
+                if epoch<450:
+                    pass
+                elif (loss > np.min(prev_loss)):
+                    stop += 1 
+                else:
+                    stop = 0
 
-                if epoch % 10 == 0:
-                    self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+                    
+                if (epoch % 10 == 0) or stop:
+                    self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Mean(Loss[-50:]): {np.mean(prev_loss):.4f}")
 
                 # Save checkpoint
-                if (epoch + 1) % save_interval == 0:
+                if ((epoch + 1) % save_interval == 0) or stop:
                     checkpoint = {
                         'epoch': epoch,
                         'model_state_dict': self.learner.state_dict(),
@@ -286,6 +298,14 @@ class BYOLModelManager:
                     }
                     torch.save(checkpoint, checkpoint_path)
                     self.logger.info(f"Checkpoint saved at epoch {epoch}")
+                
+                if (stop>patience_limit):
+                    self.logger.info('Patience limit exceeded. Enforcing early training stop.')
+                    break
+                else:
+                    prev_loss.append(loss.item())
+                    #if len(prev_loss) > 50:
+                    #    prev_loss.pop(0)
 
             except RuntimeError as e:
                 if "MPS" in str(e):
@@ -619,6 +639,7 @@ class LabelPropagation:
         n_min_auto: int = 15,
         prob_threshold: float = 0.6,
         frag_threshold: float = 0.1,
+        merger_threshold: float = 0.4,
         logger: Optional[logging.Logger] = None
     ):
         self.n_neighbors = n_neighbors
@@ -626,6 +647,7 @@ class LabelPropagation:
         self.n_min_auto = n_min_auto
         self.prob_threshold = prob_threshold
         self.frag_threshold = frag_threshold
+        self.merger_threshold = merger_threshold
         self.logger = logger or self._setup_default_logger()
 
         self.nbrs = None
@@ -733,6 +755,7 @@ class LabelPropagation:
         pca_embeddings: np.ndarray,
         labels: np.ndarray,
         handle_fragmentation_separately: bool = True,
+        handle_mergers_separately: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, int]]:
         """
         Iteratively propagate labels with high-confidence expansion.
@@ -783,7 +806,11 @@ class LabelPropagation:
 
         # Special case: Add fragmentation labels with lower threshold
         if handle_fragmentation_separately:
+            self.logger.info(f"Handling fragmentation as a special case")
             new_labels[(prob_labels[:, 4] > self.frag_threshold) & (n_labels >= self.n_min_auto)] = 4
+        if handle_mergers_separately:
+            self.logger.info(f"Handling mergers as a special case")
+            new_labels[(prob_labels[:, 3] > self.merger_threshold) & (n_labels >= self.n_min_auto)] = 3
 
         # Only update unlabeled objects
         iterative_labels[iterative_labels == 0] = new_labels[iterative_labels == 0]
@@ -1158,7 +1185,7 @@ class SimulatedGalaxyGenerator:
 
 def load_merian_images(
     data_path: Union[str, Path],
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,    
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load Merian galaxy images from pickle files.

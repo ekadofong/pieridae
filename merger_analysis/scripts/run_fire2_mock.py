@@ -33,6 +33,7 @@ python run_fire2_mock.py --no-stratified-split
 python run_fire2_mock.py --output-path ./my_fire2_results
 """
 
+import glob
 import sys
 import argparse
 import logging
@@ -154,16 +155,21 @@ def load_fire2_mock_images(
             )
 
         # Load metadata to get list of images
-        metadata_path = galaxy_dir / 'metadata.json'
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"Metadata not found: {metadata_path}")
+        use_metadata = False
+        if use_metadata:
+            metadata_path = galaxy_dir / 'metadata.json'
+            if not metadata_path.exists():
+                raise FileNotFoundError(f"Metadata not found: {metadata_path}")
 
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
 
-        # Get all images from metadata (may include multiple snapshots)
-        image_metadata_list = metadata.get('images', [])
-        n_available = len(image_metadata_list)
+            # Get all images from metadata (may include multiple snapshots)
+            image_metadata_list = metadata.get('images', [])
+            n_available = len(image_metadata_list)
+        else:
+            
+            
         if n_available < n_per_galaxy:
             raise IOError (f"Requested {n_per_galaxy} mock images but only {n_available} are available!")
         n_to_load = n_per_galaxy if n_per_galaxy is not None else n_available
@@ -1216,7 +1222,7 @@ Examples:
     parser.add_argument(
         '--n-per-galaxy',
         type=int,
-        default=10000,
+        default=3000,
         help='Number of images per galaxy (default: 50)'
     )
     parser.add_argument(

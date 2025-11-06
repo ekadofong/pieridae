@@ -63,6 +63,47 @@ def load_config(config_path: str) -> dict:
     return config
 
 
+def save_effective_config(config: dict, output_path: Path, logger: logging.Logger = None) -> None:
+    """
+    Save the effective configuration to output directory.
+
+    Converts Path objects back to strings for YAML serialization.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary with all overrides applied
+    output_path : Path
+        Output directory where config will be saved
+    logger : logging.Logger, optional
+        Logger instance
+    """
+    # Create a copy for serialization
+    config_to_save = {}
+
+    for key, value in config.items():
+        if isinstance(value, dict):
+            config_to_save[key] = {}
+            for subkey, subvalue in value.items():
+                # Convert Path objects to strings
+                if isinstance(subvalue, Path):
+                    config_to_save[key][subkey] = str(subvalue)
+                else:
+                    config_to_save[key][subkey] = subvalue
+        elif isinstance(value, Path):
+            config_to_save[key] = str(value)
+        else:
+            config_to_save[key] = value
+
+    # Save to output directory
+    config_file = output_path / 'effective_config.yaml'
+    with open(config_file, 'w') as f:
+        yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False)
+
+    if logger:
+        logger.info(f"Effective configuration saved to: {config_file}")
+
+
 def setup_logging(output_path: Path, level: str = 'INFO') -> logging.Logger:
     """Setup logging configuration"""
     logger = logging.getLogger('byol_analysis')
@@ -169,7 +210,8 @@ def create_visualizations(
                 c='lightgray',
                 label='Unlabeled',
                 alpha=0.3,
-                s=10
+                s=1,
+                zorder=0
             )
 
         axes[1].legend()
@@ -400,6 +442,9 @@ Examples:
         config.get('logging', {}).get('level', 'INFO')
     )
 
+    # Save effective configuration with all command-line overrides
+    save_effective_config(config, output_path, logger)
+
     logger.info(f"Starting BYOL analysis in {args.mode} mode")
     logger.info(f"Input path: {config['data']['input_path']}")
     logger.info(f"Output path: {config['data']['output_path']}")
@@ -409,7 +454,7 @@ Examples:
         logger.info("Loading images...")
         images, img_names = load_merian_images(
             config['data']['input_path'],
-            logger
+            logger,
         )
 
         # Run requested mode
@@ -423,11 +468,11 @@ Examples:
         logger.info("=" * 60)
         logger.info("SUCCESS")
         logger.info("=" * 60)
-        print("\n✅ Analysis completed successfully!")
+        print("\n Analysis completed successfully!")
 
     except Exception as e:
         logger.error(f"Error during analysis: {e}", exc_info=True)
-        print(f"\n❌ Error: {e}")
+        print(f"\n Error: {e}")
         sys.exit(1)
 
 
