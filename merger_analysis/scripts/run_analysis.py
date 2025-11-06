@@ -353,7 +353,7 @@ def run_full_pipeline(
     logger.info("=" * 60)
 
     # Training
-    run_training(config, images, output_path, logger)
+    run_training(config, images, img_names, output_path, logger)
 
     # Analysis
     run_analysis(config, images, img_names, output_path, logger)

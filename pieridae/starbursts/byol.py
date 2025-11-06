@@ -196,10 +196,21 @@ class BYOLModelManager:
             augment_fn2=transform2
         ).to(self.device)
 
+        # Dynamically determine representation dimension by doing a dummy forward pass
+        # BYOL returns (projection, representation) when return_embedding=True
+        with torch.no_grad():
+            dummy_input = torch.randn(
+                10, 3,
+                self.config['model']['image_size'],
+                self.config['model']['image_size']
+            ).to(self.device)
+            _, dummy_repr = self.learner(dummy_input, return_embedding=True)
+            representation_dim = dummy_repr.shape[-1]
+
         # Semi-supervised classification head (5 classes: undisturbed, ambiguous, merger, fragmentation, artifact)
-        projection_size = self.config['model']['projection_size']
-        self.classifier = nn.Linear(projection_size, 5).to(self.device)
-        self.logger.info(f"Created classification head: {projection_size} -> 5 classes")
+        # Uses encoder representation (not the BYOL projection)
+        self.classifier = nn.Linear(representation_dim, 5).to(self.device)
+        self.logger.info(f"Created classification head: {representation_dim} -> 5 classes")
 
         self.logger.info(f"BYOL model setup complete on {self.device}")
         return self.learner
@@ -280,18 +291,23 @@ class BYOLModelManager:
                     dtype=torch.float32
                 ).to(self.device)
 
-                self_loss, embeddings = self.learner(batch, return_embedding=True) # \\ self-supervised loss
+                # Calculate self-supervised BYOL loss
+                self_loss = self.learner(batch)
 
                 # Semi-supervised classification loss
                 if labels is not None:
+                    # Get representation for classification (separate forward pass)
+                    # Returns (projection, representation) - we need the representation
+                    _, representation = self.learner(batch, return_embedding=True)
+
                     # Get batch labels (convert from 1-5 to 0-4 for PyTorch indexing)
                     batch_labels = torch.tensor(
                         labels[indices] - 1,
                         dtype=torch.long
                     ).to(self.device)
 
-                    # Forward pass through classifier
-                    logits = self.classifier(embeddings)
+                    # Forward pass through classifier using representation
+                    logits = self.classifier(representation)
 
                     # Cross-entropy loss
                     super_loss = nn.functional.cross_entropy(logits, batch_labels)
