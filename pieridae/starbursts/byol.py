@@ -95,6 +95,7 @@ class BYOLModelManager:
         self.logger = logger or self._setup_default_logger()
         self.device = self._setup_device()
         self.learner = None
+        self.classifier = None  # Semi-supervised classification head
 
         # Adjust batch sizes for device limitations
         self._adjust_batch_sizes()
@@ -195,12 +196,18 @@ class BYOLModelManager:
             augment_fn2=transform2
         ).to(self.device)
 
+        # Semi-supervised classification head (5 classes: undisturbed, ambiguous, merger, fragmentation, artifact)
+        projection_size = self.config['model']['projection_size']
+        self.classifier = nn.Linear(projection_size, 5).to(self.device)
+        self.logger.info(f"Created classification head: {projection_size} -> 5 classes")
+
         self.logger.info(f"BYOL model setup complete on {self.device}")
         return self.learner
 
     def train_model(
         self,
         images: np.ndarray,
+        labels: np.ndarray = None,
         resume: bool = True,
         patience_limit: int = 20
     ) -> None:
@@ -219,8 +226,10 @@ class BYOLModelManager:
         if self.learner is None:
             self.setup_model()
 
+        # Optimizer for both BYOL and classifier parameters
+        params = list(self.learner.parameters()) + list(self.classifier.parameters())
         optimizer = Adam(
-            self.learner.parameters(),
+            params,
             lr=float(self.config['training']['learning_rate'])
         )
 
@@ -239,6 +248,14 @@ class BYOLModelManager:
                 )
                 self.learner.load_state_dict(checkpoint['model_state_dict'])
                 optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+                # Load classifier if available (backward compatibility)
+                if 'classifier_state_dict' in checkpoint:
+                    self.classifier.load_state_dict(checkpoint['classifier_state_dict'])
+                    self.logger.info("Loaded classifier from checkpoint")
+                else:
+                    self.logger.info("No classifier in checkpoint - using freshly initialized classifier")
+
                 start_epoch = checkpoint['epoch'] + 1
                 self.logger.info(f"Resumed from epoch {start_epoch}")
             except Exception as e:
@@ -263,7 +280,25 @@ class BYOLModelManager:
                     dtype=torch.float32
                 ).to(self.device)
 
-                loss = self.learner(batch)
+                self_loss, embeddings = self.learner(batch, return_embedding=True) # \\ self-supervised loss
+
+                # Semi-supervised classification loss
+                if labels is not None:
+                    # Get batch labels (convert from 1-5 to 0-4 for PyTorch indexing)
+                    batch_labels = torch.tensor(
+                        labels[indices] - 1,
+                        dtype=torch.long
+                    ).to(self.device)
+
+                    # Forward pass through classifier
+                    logits = self.classifier(embeddings)
+
+                    # Cross-entropy loss
+                    super_loss = nn.functional.cross_entropy(logits, batch_labels)
+                else:
+                    super_loss = 0.
+
+                loss = self_loss + self.config['training']['s4l_weight']*super_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -284,13 +319,22 @@ class BYOLModelManager:
 
                     
                 if (epoch % 10 == 0) or stop:
-                    self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Mean(Loss[-50:]): {np.mean(prev_loss):.4f}")
+                    if labels is not None:
+                        self.logger.info(
+                            f"Epoch {epoch}, Total Loss: {loss.item():.4f} "
+                            f"(Self-supervised: {self_loss.item():.4f}, "
+                            f"Supervised: {super_loss.item():.4f}), "
+                            f"Mean(Loss[-50:]): {np.mean(prev_loss):.4f}"
+                        )
+                    else:
+                        self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Mean(Loss[-50:]): {np.mean(prev_loss):.4f}")
 
                 # Save checkpoint
                 if ((epoch + 1) % save_interval == 0) or stop:
                     checkpoint = {
                         'epoch': epoch,
                         'model_state_dict': self.learner.state_dict(),
+                        'classifier_state_dict': self.classifier.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'loss': loss.item(),
                         'config': self.config,

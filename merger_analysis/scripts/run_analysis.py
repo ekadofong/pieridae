@@ -276,6 +276,7 @@ def load_labels(config: dict, img_names: np.ndarray, logger: logging.Logger = No
 def run_training(
     config: dict,
     images: np.ndarray,
+    img_names: np.ndarray,
     output_path: Path,
     logger: logging.Logger
 ) -> None:
@@ -284,8 +285,14 @@ def run_training(
     logger.info("TRAINING MODE")
     logger.info("=" * 60)
 
+    labels = load_labels(config, img_names, logger)
+    
     model_manager = BYOLModelManager(config, output_path, logger)
-    model_manager.train_model(images, resume=config['training'].get('resume', False))
+    model_manager.train_model(
+        images, 
+        labels,
+        resume=config['training'].get('resume', False)
+    )
 
     logger.info("Training complete")
 
@@ -459,7 +466,7 @@ Examples:
 
         # Run requested mode
         if args.mode == 'train':
-            run_training(config, images, output_path, logger)
+            run_training(config, images, img_names, output_path, logger)
         elif args.mode == 'analyze':
             run_analysis(config, images, img_names, output_path, logger)
         elif args.mode == 'full':

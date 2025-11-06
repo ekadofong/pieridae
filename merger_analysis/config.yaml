@@ -20,6 +20,7 @@ training:
   learning_rate: 0.0003
   save_interval: 100
   resume: false
+  s4l_weight: 0.5
 
 # Inference parameters
 inference:
@@ -30,6 +31,7 @@ analysis:
   # PCA settings
   pca_components: 20  # null for automatic selection
   explained_variance_threshold: 0.95
+
 
   # UMAP settings
   umap_components: 2
