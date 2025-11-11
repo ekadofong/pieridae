@@ -291,7 +291,8 @@ def run_training(
     model_manager.train_model(
         images, 
         labels,
-        resume=config['training'].get('resume', False)
+        resume=config['training'].get('resume', False),
+        patience_limit=config['training'].get('patience_limit', 20)
     )
 
     logger.info("Training complete")

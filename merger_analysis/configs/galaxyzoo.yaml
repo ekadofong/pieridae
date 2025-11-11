@@ -20,6 +20,10 @@ training:
   learning_rate: 0.0003
   save_interval: 100
   resume: false
+  s4l_weight: 0.25
+  patience_limit: 30
+  supervised_chunk_size: 128  # Chunk size for processing all labeled data per epoch
+
 
 # Inference parameters
 inference:
