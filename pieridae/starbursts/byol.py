@@ -278,13 +278,28 @@ class BYOLModelManager:
         num_epochs = self.config['training']['num_epochs']
         save_interval = self.config['training']['save_interval']
         batch_size = self.config['training']['batch_size']
+        supervised_chunk_size = self.config['training'].get('supervised_chunk_size', 512)
+
+        # Pre-compute labeled indices for efficiency
+        if labels is not None:
+            labeled_indices = np.where(labels > 0)[0]
+            n_labeled = len(labeled_indices)
+            self.logger.info(f"Found {n_labeled} labeled samples ({100*n_labeled/len(labels):.2f}% of dataset)")
+        else:
+            labeled_indices = None
+            n_labeled = 0
+
         
-        prev_loss = []
         stop = 0
-        
+
+        # Track best checkpoint for restoration after early stopping
+        best_loss = float('inf')
+        best_epoch = -1
+        best_checkpoint_path = self.output_path / 'best_model_checkpoint.pt'
+
         for epoch in tqdm(range(start_epoch, num_epochs), desc="Training BYOL"):
             try:
-                # Sample random batch
+                # Sample random batch for BYOL self-supervised learning
                 indices = np.random.permutation(len(images))[:batch_size]
                 batch = torch.tensor(
                     images[indices],
@@ -294,25 +309,48 @@ class BYOLModelManager:
                 # Calculate self-supervised BYOL loss
                 self_loss = self.learner(batch)
 
-                # Semi-supervised classification loss
-                if labels is not None:
-                    # Get representation for classification (separate forward pass)
-                    # Returns (projection, representation) - we need the representation
-                    _, representation = self.learner(batch, return_embedding=True)
+                # Semi-supervised classification loss - process ALL labeled samples
+                super_loss = 0.
+                if labeled_indices is not None and n_labeled > 0:
+                    # Process all labeled samples in chunks
+                    n_chunks = int(np.ceil(n_labeled / supervised_chunk_size))
+                    chunk_losses = []
 
-                    # Get batch labels (convert from 1-5 to 0-4 for PyTorch indexing)
-                    batch_labels = torch.tensor(
-                        labels[indices] - 1,
-                        dtype=torch.long
-                    ).to(self.device)
+                    for chunk_idx in range(n_chunks):
+                        # Get chunk indices
+                        start_idx = chunk_idx * supervised_chunk_size
+                        end_idx = min((chunk_idx + 1) * supervised_chunk_size, n_labeled)
+                        chunk_indices = labeled_indices[start_idx:end_idx]
 
-                    # Forward pass through classifier using representation
-                    logits = self.classifier(representation)
+                        # Load chunk images
+                        chunk_batch = torch.tensor(
+                            images[chunk_indices],
+                            dtype=torch.float32
+                        ).to(self.device)
 
-                    # Cross-entropy loss
-                    super_loss = nn.functional.cross_entropy(logits, batch_labels)
-                else:
-                    super_loss = 0.
+                        # Extract representations without computing gradients for encoder
+                        # (encoder is updated only via BYOL loss)
+                        with torch.no_grad():
+                            _, representation = self.learner(chunk_batch, return_embedding=True)
+
+                        # Detach and require gradients only for classifier
+                        representation = representation.detach().requires_grad_(True)
+
+                        # Get labels for this chunk (convert 1-5 to 0-4)
+                        chunk_labels = torch.tensor(
+                            labels[chunk_indices] - 1,
+                            dtype=torch.long
+                        ).to(self.device)
+
+                        # Forward pass through classifier
+                        logits = self.classifier(representation)
+
+                        # Cross-entropy loss for this chunk
+                        chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
+                        chunk_losses.append(chunk_loss)
+
+                    # Average loss across all chunks
+                    super_loss = torch.stack(chunk_losses).mean()
 
                 loss = self_loss + self.config['training']['s4l_weight']*super_loss
 
@@ -326,11 +364,12 @@ class BYOLModelManager:
                 optimizer.step()
                 self.learner.update_moving_average()
                 
-                if epoch<450:
-                    pass
-                elif (loss > np.min(prev_loss)):
+
+                if (loss > best_loss):
                     stop += 1 
+                    checkpoint=False
                 else:
+                    checkpoint=True
                     stop = 0
 
                     
@@ -339,15 +378,15 @@ class BYOLModelManager:
                         self.logger.info(
                             f"Epoch {epoch}, Total Loss: {loss.item():.4f} "
                             f"(Self-supervised: {self_loss.item():.4f}, "
-                            f"Supervised: {super_loss.item():.4f}), "
-                            f"Mean(Loss[-50:]): {np.mean(prev_loss):.4f}"
+                            f"Supervised: {super_loss.item():.4f} on {n_labeled} samples)."
+                            f" Patience left: {patience_limit-stop}/{patience_limit}"
                         )
                     else:
-                        self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Mean(Loss[-50:]): {np.mean(prev_loss):.4f}")
+                        self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
 
                 # Save checkpoint
-                if ((epoch + 1) % save_interval == 0) or stop:
-                    checkpoint = {
+                if ((epoch + 1) % save_interval == 0) or ((epoch > 200) and checkpoint):
+                    checkpoint_dict = {
                         'epoch': epoch,
                         'model_state_dict': self.learner.state_dict(),
                         'classifier_state_dict': self.classifier.state_dict(),
@@ -356,16 +395,19 @@ class BYOLModelManager:
                         'config': self.config,
                         'device': str(self.device)
                     }
-                    torch.save(checkpoint, checkpoint_path)
+                    torch.save(checkpoint_dict, checkpoint_path)
                     self.logger.info(f"Checkpoint saved at epoch {epoch}")
+
+                    # If this is a best checkpoint (loss improved), save it separately
+                    if checkpoint and loss.item() < best_loss:
+                        best_loss = loss.item()
+                        best_epoch = epoch
+                        torch.save(checkpoint_dict, best_checkpoint_path)
+                        self.logger.info(f"Best checkpoint saved at epoch {epoch} with loss {best_loss:.4f}")
                 
                 if (stop>patience_limit):
                     self.logger.info('Patience limit exceeded. Enforcing early training stop.')
                     break
-                else:
-                    prev_loss.append(loss.item())
-                    #if len(prev_loss) > 50:
-                    #    prev_loss.pop(0)
 
             except RuntimeError as e:
                 if "MPS" in str(e):
@@ -377,13 +419,32 @@ class BYOLModelManager:
                 else:
                     raise e
 
+        # Restore best checkpoint if early stopping was triggered
+        if best_checkpoint_path.exists() and best_epoch >= 0:
+            self.logger.info(f"Restoring best model from epoch {best_epoch} with loss {best_loss:.4f}")
+            try:
+                best_checkpoint = torch.load(
+                    best_checkpoint_path,
+                    map_location=self.device,
+                    weights_only=False
+                )
+                self.learner.load_state_dict(best_checkpoint['model_state_dict'])
+                self.classifier.load_state_dict(best_checkpoint['classifier_state_dict'])
+                self.logger.info("Best model restored successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to restore best checkpoint: {e}")
+                self.logger.info("Using current model state instead")
+
         # Save final model
         final_model_path = self.output_path / 'byol_final_model.pt'
         torch.save({
             'model_state_dict': self.learner.state_dict(),
+            'classifier_state_dict': self.classifier.state_dict(),
             'config': self.config,
             'training_complete': True,
-            'device': str(self.device)
+            'device': str(self.device),
+            'best_epoch': best_epoch,
+            'best_loss': best_loss
         }, final_model_path)
 
         self.logger.info("Training completed successfully")
@@ -424,6 +485,12 @@ class BYOLModelManager:
             self.learner.load_state_dict(checkpoint['model_state_dict'])
         else:
             self.learner.load_state_dict(checkpoint)
+
+        # Load classifier if available (for semi-supervised models)
+        if 'classifier_state_dict' in checkpoint and self.classifier is not None:
+            self.classifier.load_state_dict(checkpoint['classifier_state_dict'])
+            self.classifier.eval()
+            self.logger.info("Loaded classifier from checkpoint")
 
         self.learner.eval()
         self.logger.info("Model loaded successfully")
@@ -942,6 +1009,246 @@ class LabelPropagation:
         self.logger.info(f"\nSaved {len(flagged_objects)} flagged object IDs to: {output_path}")
 
         return flagged_objects
+
+
+class FrozenClassifier:
+    """
+    Neural network-based classification using trained BYOL classifier.
+
+    Replaces K-NN label propagation with direct probabilistic predictions
+    from the semi-supervised classifier trained with the BYOL model.
+
+    This class provides a drop-in replacement for LabelPropagation that uses
+    the trained neural network classifier instead of K-NN propagation.
+
+    Parameters
+    ----------
+    model_path : Path
+        Path to trained model checkpoint containing classifier_state_dict
+    config : Dict[str, Any]
+        Configuration dictionary with model parameters
+    device : torch.device, optional
+        Device to run inference on. If None, auto-detects (MPS > CUDA > CPU)
+    logger : logging.Logger, optional
+        Logger instance. If None, creates a new logger
+
+    Attributes
+    ----------
+    learner : BYOL
+        BYOL model for extracting representations
+    classifier : nn.Linear
+        Trained classification head
+    device : torch.device
+        Computing device
+    """
+
+    def __init__(
+        self,
+        model_path: Path,
+        config: Dict[str, Any],
+        device: Optional[torch.device] = None,
+        logger: Optional[logging.Logger] = None
+    ):
+        self.config = config
+        self.model_path = Path(model_path)
+        self.logger = logger or self._setup_default_logger()
+
+        # Setup device
+        if device is None:
+            if torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+            elif torch.cuda.is_available():
+                self.device = torch.device('cuda')
+            else:
+                self.device = torch.device('cpu')
+        else:
+            self.device = device
+
+        self.logger.info(f"FrozenClassifier using device: {self.device}")
+
+        # Load checkpoint
+        self.logger.info(f"Loading trained classifier from: {model_path}")
+        if not self.model_path.exists():
+            raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+
+        checkpoint = torch.load(
+            self.model_path,
+            map_location=self.device,
+            weights_only=False
+        )
+
+        if 'classifier_state_dict' not in checkpoint:
+            raise ValueError(
+                f"Checkpoint does not contain classifier_state_dict. "
+                f"This model was not trained with semi-supervised classification."
+            )
+
+        # Setup BYOL model to get representation dimension
+        # We need the same architecture as training
+        from torchvision import models
+        resnet = models.resnet18(weights=None)  # Don't need pretrained weights
+
+        self.learner = BYOL(
+            resnet,
+            image_size=config['model']['image_size'],
+            hidden_layer='avgpool',
+            projection_size=config['model']['projection_size'],
+            projection_hidden_size=config['model']['projection_hidden_size'],
+            moving_average_decay=config['model']['moving_average_decay'],
+            use_momentum=True
+        ).to(self.device)
+
+        # Load trained weights
+        self.learner.load_state_dict(checkpoint['model_state_dict'])
+        self.learner.eval()
+
+        # Get representation dimension dynamically
+        with torch.no_grad():
+            dummy_input = torch.randn(
+                1, 3,
+                config['model']['image_size'],
+                config['model']['image_size']
+            ).to(self.device)
+            _, dummy_repr = self.learner(dummy_input, return_embedding=True)
+            representation_dim = dummy_repr.shape[-1]
+
+        # Create and load classifier
+        self.classifier = nn.Linear(representation_dim, 5).to(self.device)
+        self.classifier.load_state_dict(checkpoint['classifier_state_dict'])
+        self.classifier.eval()
+
+        self.logger.info(
+            f"Loaded classifier: {representation_dim} -> 5 classes"
+        )
+
+    def _setup_default_logger(self) -> logging.Logger:
+        """Setup a default logger if none provided"""
+        logger = logging.getLogger('frozen_classifier')
+        logger.setLevel(logging.INFO)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(
+                logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            )
+            logger.addHandler(handler)
+        return logger
+
+    def _predict_batch(
+        self,
+        embeddings: np.ndarray,
+        batch_size: int = 512
+    ) -> np.ndarray:
+        """
+        Run classifier inference in batches.
+
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Raw embeddings from BYOL encoder (N, representation_dim)
+        batch_size : int, default=512
+            Batch size for inference
+
+        Returns
+        -------
+        probabilities : np.ndarray
+            Class probabilities (N, 5)
+        """
+        all_probs = []
+        num_batches = (len(embeddings) + batch_size - 1) // batch_size
+
+        with torch.no_grad():
+            for i in range(num_batches):
+                start_idx = i * batch_size
+                end_idx = min((i + 1) * batch_size, len(embeddings))
+
+                batch = torch.tensor(
+                    embeddings[start_idx:end_idx],
+                    dtype=torch.float32
+                ).to(self.device)
+
+                # Get logits and convert to probabilities
+                logits = self.classifier(batch)
+                probs = torch.softmax(logits, dim=1)
+
+                all_probs.append(probs.cpu().numpy())
+
+        return np.vstack(all_probs)
+
+    def iterative_propagation(
+        self,
+        embeddings: np.ndarray,
+        labels: Optional[np.ndarray] = None,
+        **kwargs
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, int]]:
+        """
+        Compute probabilistic classifications using neural network.
+
+        This method signature matches LabelPropagation.iterative_propagation()
+        for API compatibility, but doesn't actually perform iterative propagation.
+        Instead, it directly classifies all samples using the trained neural network.
+
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Raw embeddings from BYOL encoder (N, representation_dim)
+            NOTE: This should be raw embeddings, NOT PCA-reduced embeddings
+        labels : np.ndarray, optional
+            Not used by FrozenClassifier, kept for API compatibility
+        **kwargs
+            Additional arguments, ignored (for API compatibility)
+
+        Returns
+        -------
+        iterative_labels : np.ndarray
+            Hard class predictions (argmax of probabilities)
+            Shape: (N,) with values in [0, 1, 2, 3, 4]
+        n_labels_iter : np.ndarray
+            Dummy array of zeros (for API compatibility with LabelPropagation)
+            Shape: (N,)
+        prob_labels_iter : np.ndarray
+            Probability distribution over 5 classes
+            Shape: (N, 6) where column 0 is zeros, columns 1-5 are class probs
+            This matches LabelPropagation format where class labels are 1-indexed
+        stats : dict
+            Statistics about predictions
+        """
+        self.logger.info(
+            f"\nRunning neural network classification on {len(embeddings)} samples..."
+        )
+
+        # Get probability predictions
+        # Returns (N, 5) with probabilities for classes 0-4
+        probs_0indexed = self._predict_batch(embeddings)
+
+        # Convert to 1-indexed format to match LabelPropagation
+        # LabelPropagation returns (N, 6) where:
+        #   - column 0: probability of class 0 (unclassified/background)
+        #   - columns 1-5: probabilities for classes 1-5
+        prob_labels_iter = np.zeros((len(embeddings), 6))
+        prob_labels_iter[:, 1:6] = probs_0indexed
+
+        # Get hard predictions (argmax + 1 to convert to 1-indexed)
+        iterative_labels = np.argmax(probs_0indexed, axis=1) + 1
+
+        # Create dummy n_labels array (all zeros, not used by downstream code)
+        n_labels_iter = np.zeros(len(embeddings), dtype=int)
+
+        # Compute statistics
+        unique, counts = np.unique(iterative_labels, return_counts=True)
+
+        stats = {
+            'n_human': 0,  # No human labels used
+            'n_added_iteration': len(embeddings),  # All samples classified
+            'n_final_auto': len(embeddings),
+            'method': 'neural_network'
+        }
+
+        self.logger.info("Classification complete")
+        self.logger.info("Predicted label distribution:")
+        for label_val, count in zip(unique, counts):
+            self.logger.info(f"  Class {label_val}: {count} objects")
+
+        return iterative_labels, n_labels_iter, prob_labels_iter, stats
 
 
 class SimulatedGalaxyGenerator:
