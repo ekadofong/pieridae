@@ -37,6 +37,7 @@ from typing import Dict, Tuple, Optional
 import yaml
 import numpy as np
 import pandas as pd
+import torch
 import matplotlib
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -49,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 from pieridae.starbursts.byol import (
     EmbeddingAnalyzer,
     LabelPropagation,
+    FrozenClassifier,
 )
 from pieridae.starbursts import sample
 from ekfplot import plot as ek, colors as ec, colorlists
@@ -118,7 +120,8 @@ def load_image_by_name(img_name: str, data_path: Path) -> np.ndarray:
     return np.array(img, dtype=np.float32)
 
 
-def load_data(config: dict, logger: logging.Logger) -> Dict:
+def load_data(config: dict, logger: logging.Logger,
+              use_nn_classifier: bool = True) -> Dict:
     """
     Load all data needed for figure generation.
 
@@ -215,22 +218,52 @@ def load_data(config: dict, logger: logging.Logger) -> Dict:
         data['labels'] = labels
         data['label_meanings'] = {0: 'unclassified'}
 
-    # Run label propagation
-    logger.info("Running label propagation...")
-    n_neighbors = config.get('labels', {}).get('n_neighbors', 50)
-    n_min = config.get('labels', {}).get('minimum_labeled_neighbors', 5)
-    n_min_auto = config.get('labels', {}).get('minimum_labeled_neighbors_for_autoprop', 10)
+    # Check if trained classifier is available
+    logger.info("Checking for trained classifier...")
+    model_path = Path(output_path) / 'byol_final_model.pt'
+    
 
-    propagator = LabelPropagation(
-        n_neighbors=n_neighbors,
-        n_min=n_min,
-        n_min_auto=n_min_auto,
-        prob_threshold=config.get('labels', {}).get('prob_threshold', 0.7),
-        frag_threshold=config.get('labels', {}).get('frag_threshold', 0.25),
-    )
+    if (model_path.exists()) and use_nn_classifier:
+        try:
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+            if 'classifier_state_dict' in checkpoint:
+                use_nn_classifier = True
+                logger.info("Found trained classifier - using FrozenClassifier (neural network)")
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint: {e}")
+            logger.info("Falling back to LabelPropagation")
+            use_nn_classifier = False
+        
 
+    # Initialize appropriate classifier
+    if use_nn_classifier:
+        propagator = FrozenClassifier(
+            model_path=model_path,
+            config=config,
+            logger=logger
+        )
+        # FrozenClassifier uses raw embeddings, not PCA
+        input_embeddings = embeddings
+    else:
+        logger.info("Using LabelPropagation (K-NN based)")
+        n_neighbors = config.get('labels', {}).get('n_neighbors', 50)
+        n_min = config.get('labels', {}).get('minimum_labeled_neighbors', 5)
+        n_min_auto = config.get('labels', {}).get('minimum_labeled_neighbors_for_autoprop', 10)
+
+        propagator = LabelPropagation(
+            n_neighbors=n_neighbors,
+            n_min=n_min,
+            n_min_auto=n_min_auto,
+            prob_threshold=config.get('labels', {}).get('prob_threshold', 0.7),
+            frag_threshold=config.get('labels', {}).get('frag_threshold', 0.25),
+        )
+        # LabelPropagation uses PCA embeddings
+        input_embeddings = embeddings_pca
+
+    # Run classification
+    logger.info("Running classification...")
     iterative_labels, n_labels_iter, prob_labels_iter, stats = \
-        propagator.iterative_propagation(embeddings_pca, labels)
+        propagator.iterative_propagation(input_embeddings, labels)
 
     data['iterative_labels'] = iterative_labels
     data['n_labels_iter'] = n_labels_iter
@@ -887,7 +920,7 @@ def make_figure_merger_prob_vs_dsfs(
     cmap = ec.colormap_from_list([colorlists.slides['orange'], plt.cm.coolwarm(0.5), colorlists.slides['bluebird']])
 
     axarr[0].set_xlim(-0.75, 4.5)
-    axarr[0].set_ylim(0., 0.3)
+    axarr[0].set_ylim(0., 1.)
     
     for gidx, gid in enumerate(groupids):
         selected = catalog.loc[groups == gid]
