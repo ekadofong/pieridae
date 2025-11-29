@@ -3,7 +3,7 @@
 
 # Data paths
 data:
-  input_path: ../../local_data/pieridae_output/starlet/msorabove_v0
+  input_path: ../../local_data/pieridae_output/starlet/msorabove_v1
   output_path: ../output/fiducial
 
 # Model architecture

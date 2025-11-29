@@ -111,7 +111,7 @@ visualization:
 
   # Row labels (class descriptions)
   row_labels:
-    merger: "Likely merger"
-    ambiguous: "Ambiguous morphology"
-    undisturbed: "Undisturbed"
+    merger: "Likely tidal feature"
+    ambiguous: "Likely tidal feature"
+    undisturbed: "Likely undisturbed"
     fragmented: "Likely fragmented"
