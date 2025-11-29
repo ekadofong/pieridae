@@ -157,7 +157,7 @@ def pull_cutouts_from_path(cluster, dirstem, object_name, output_dir, dry_run=Fa
     success = True
 
     # Pull Merian N708 cutouts
-    merian_pattern = f"{dirstem}/merian/{object_name}_N708_merim.fits"
+    merian_pattern = f"{dirstem}/merian/{object_name}_N708_mer*.fits"
     merian_cmd = f"rsync -avz {cluster}:{merian_pattern} {merian_dir}/"
 
     if verbose or dry_run:
