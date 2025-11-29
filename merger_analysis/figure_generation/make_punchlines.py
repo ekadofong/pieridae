@@ -36,12 +36,14 @@ from typing import Dict, Tuple, Optional
 
 import yaml
 import numpy as np
+from scipy import stats
 import pandas as pd
 import torch
 import matplotlib
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import colors
+from scipy.stats import gaussian_kde
 from tqdm import tqdm
 
 # Add pieridae to path
@@ -56,6 +58,14 @@ from pieridae.starbursts import sample
 from ekfplot import plot as ek, colors as ec, colorlists
 from ekfphys import calibrations
 from ekfstats import sampling
+
+cmap = ec.colormap_from_list([
+    ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base, 
+    colorlists.slides['orange'], 
+    plt.cm.coolwarm(0.5), 
+    colorlists.slides['bluebird'],
+    ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base, 
+])
 
 
 def setup_logging(level: str = 'INFO') -> logging.Logger:
@@ -121,7 +131,11 @@ def load_image_by_name(img_name: str, data_path: Path) -> np.ndarray:
 
 
 def load_data(config: dict, logger: logging.Logger,
-              use_nn_classifier: bool = True) -> Dict:
+              use_nn_classifier: bool = True, 
+              force_pca_load: bool = False,
+              update_masses=False,
+              mass_cachefile = Path(os.environ['HOME']) / '.cache/merian/logmass_adjusted.csv'
+              ) -> Dict:
     """
     Load all data needed for figure generation.
 
@@ -186,13 +200,14 @@ def load_data(config: dict, logger: logging.Logger,
     data['embeddings'] = embeddings
     logger.info(f"Embeddings shape: {embeddings.shape}")
 
-    # Compute PCA
-    logger.info("Computing PCA...")
-    analyzer = EmbeddingAnalyzer(config)
-    embeddings_pca = analyzer.compute_pca(embeddings)
-    data['embeddings_pca'] = embeddings_pca
-    explained_var = analyzer.pca.explained_variance_ratio_.sum() * 100
-    logger.info(f"PCA complete: {analyzer.pca.n_components_} components, {explained_var:.1f}% variance")
+    if (not use_nn_classifier) or force_pca_load:
+        # Compute PCA
+        logger.info("Computing PCA...")
+        analyzer = EmbeddingAnalyzer(config)
+        embeddings_pca = analyzer.compute_pca(embeddings)
+        data['embeddings_pca'] = embeddings_pca
+        explained_var = analyzer.pca.explained_variance_ratio_.sum() * 100
+        logger.info(f"PCA complete: {analyzer.pca.n_components_} components, {explained_var:.1f}% variance")
 
     # Load labels
     logger.info("Loading classification labels...")
@@ -299,20 +314,34 @@ def load_data(config: dict, logger: logging.Logger,
     base_catalog = full_catalog.loc[masks['is_good'][0]]
 
     # Load adjusted masses
-    logger.info("Loading adjusted masses from individual files...")
-    for sid in tqdm(base_catalog.index, desc="Loading masses"):
-        filename = f'{data_path}/{sid}/{sid}_i_results.pkl'
-        if not os.path.exists(filename):
-            continue
-        with open(filename, 'rb') as f:
-            x = pickle.load(f)
-        base_catalog.loc[sid, 'logmass_adjusted'] = x['logmass_adjusted']
+    print(mass_cachefile)
+    assert os.path.exists(mass_cachefile)
+    cache_exists = os.path.exists(mass_cachefile)
+    if cache_exists:
+        logger.info('Loading cached masses...')
+        logmstar_cache = pd.read_csv(mass_cachefile, index_col=0)    
+    else:
+        logmstar_cache = []
+       
+    if update_masses or (not cache_exists) or (len(logmstar_cache) != len(base_catalog)):
+        logger.info("Loading adjusted masses from individual files...")
+        for sid in tqdm(base_catalog.index, desc="Loading masses"):
+            filename = f'{data_path}/{sid}/{sid}_i_results.pkl'
+            if not os.path.exists(filename):
+                continue
+            with open(filename, 'rb') as f:
+                x = pickle.load(f)
+            base_catalog.loc[sid, 'logmass_adjusted'] = x['logmass_adjusted']
 
-    base_catalog.loc[base_catalog['logmass_adjusted'].isna(), 'logmass_adjusted'] = \
-        base_catalog.loc[base_catalog['logmass_adjusted'].isna(), 'logmass']
+        base_catalog.loc[base_catalog['logmass_adjusted'].isna(), 'logmass_adjusted'] = \
+            base_catalog.loc[base_catalog['logmass_adjusted'].isna(), 'logmass']   
+        base_catalog['logmass_adjusted'].to_csv(mass_cachefile)
+    else:
+        logger.info("Using cached adjusted masses...")
+        base_catalog.loc[logmstar_cache.index, 'logmass_adjusted'] = logmstar_cache['logmass_adjusted']
 
     # Create catalog subset
-    fragmented_highthresh = prob_labels_iter[:, 4] > 0.3
+    fragmented_highthresh = prob_labels_iter[:, 4] > 0.5
     catalog = base_catalog.reindex(img_names[~fragmented_highthresh])
     catalog['p_merger'] = np.where(
         (prob_labels_iter[~fragmented_highthresh] == 0).all(axis=1),
@@ -333,7 +362,7 @@ def load_data(config: dict, logger: logging.Logger,
     dm = catalog['logmass_adjusted'] - catalog['logmass']
     catalog = catalog.loc[
         (dm < 0.5) &
-        (catalog['logmass_adjusted'] <= 10.5) &
+        (catalog['logmass_adjusted'] <= 11.) &
         (catalog['logmass_adjusted'] >= 7.5)
     ]
 
@@ -379,6 +408,52 @@ def load_data(config: dict, logger: logging.Logger,
 
     return data
 
+def load_data_multirun (
+    source_dir: Path,
+    run_names: list,
+    logger: logging.Logger
+):
+    runs = {}
+    for ix,rname in enumerate(run_names):
+        runs[rname] = {
+            'path': source_dir / rname,
+            'label': rname,
+            'color': f'C{ix+1}',
+            'description': rname
+        }        
+    
+    data = {}
+    for rname in run_names:
+        config_path = runs[rname]['path'] / 'effective_config.yaml'
+        run_config = load_config(config_path)
+        
+        data[rname] = load_data(
+                        run_config,
+                        logger,
+                        update_masses=False,
+                        use_nn_classifier=True
+                    )  
+    
+    principal_run = data[run_names[0]]
+    nruns = len(data.keys())
+    prob_labels_arr = np.zeros([nruns, *principal_run['prob_labels_iter'].shape])
+    for ix,rname in enumerate(run_names):
+        prob_labels_arr[ix] = data[rname]['prob_labels_iter']    
+    
+    m_prob_labels = prob_labels_arr.mean(axis=0)
+    s_prob_labels = prob_labels_arr.std(axis=0)    
+    
+    has_label = s_prob_labels[:,1]<1.
+    final_prob_labels = m_prob_labels.copy ()
+    final_prob_labels[~has_label,:] = np.nan
+    principal_run['prob_labels_iter'] = final_prob_labels
+    principal_run['mean_prob_labels'] = m_prob_labels
+    principal_run['std_prob_labels'] = s_prob_labels
+    
+    principal_run['possible_merger'] = (principal_run['prob_labels_iter'][:,2]+principal_run['prob_labels_iter'][:,3])>principal_run['prob_labels_iter'][:,1]
+    
+    return principal_run
+    
 
 def make_figure_label_distribution(
     data: Dict,
@@ -472,15 +547,15 @@ def make_figure_classification_conflicts(
     labels = data['labels']
     prob_labels_iter = data['prob_labels_iter']
     n_labels_iter = data['n_labels_iter']
-    pmerger = data['pmerger']
-    fragmented = data['fragmented']
+    pmerger = data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3]
+    fragmented = data['prob_labels_iter'][:,4] > 0.4
     data_path = data['data_path']
     label_meanings = data['label_meanings']
 
     manual_merger = (labels == 3) | (labels == 2)
     manual_nonmerger = labels == 1
 
-    is_automerger = pmerger > 0.4
+    is_automerger = pmerger > 0.5
     mu_am = np.arange(len(img_names))[is_automerger & ~fragmented & manual_nonmerger]
     mm_au = np.arange(len(img_names))[~is_automerger & ~fragmented & manual_merger]
     
@@ -520,8 +595,7 @@ def make_figure_classification_conflicts(
         # Add statistics
         ek.text(
             0.025, 0.025,
-            f"""N_labels = {n_labels_iter[gix]}
-Pr[ud] = {prob_labels_iter[gix, 1]:.2f}
+            f"""Pr[ud] = {prob_labels_iter[gix, 1]:.2f}
 Pr[amb] = {prob_labels_iter[gix, 2]:.2f}
 Pr[merg] = {prob_labels_iter[gix, 3]:.2f}
 Pr[frag] = {prob_labels_iter[gix, 4]:.2f}""",
@@ -595,7 +669,9 @@ def make_figure_merger_candidates(
     img_names = data['img_names']
     prob_labels_iter = data['prob_labels_iter']
     n_labels_iter = data['n_labels_iter']
-    possible_merger = data['possible_merger']
+    possible_merger = (data['prob_labels_iter'][:,2]+data['prob_labels_iter'][:,3])>(data['prob_labels_iter'][:,1])
+    possible_merger &= data['prob_labels_iter'][:,4] < 0.1
+    possible_merger &= (data['prob_labels_iter'][:,2]>0.5)|(data['prob_labels_iter'][:,3]>0.5)
     fragmented = data['fragmented']
     data_path = data['data_path']
 
@@ -615,7 +691,7 @@ def make_figure_merger_candidates(
         image = load_image_by_name(img_name, data_path)
 
         # i-band
-        ek.imshow(image[1], ax=axarr[0, idx], q=0.01, cmap='Greys')
+        ek.imshow(image[1], ax=axarr[0, idx], q=0.025, cmap='Greys')
 
         # i-band log scale
         axarr[1, idx].imshow(
@@ -660,7 +736,7 @@ Pr[frag] = {prob_labels_iter[gix, 4]:.2f}""",
         plt.savefig(output_file, dpi=300, bbox_inches='tight')
         plt.close()
 
-    logger.info(f"Saved: {output_file}")
+        logger.info(f"Saved: {output_file}")
 
 
 def make_figure_ha_sfs_merger_fraction(
@@ -722,6 +798,7 @@ def make_figure_ha_sfs_merger_fraction(
         ax=axarr[1],
     )
 
+    print(np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.975))
     probable_merger = (catalog['p_ambig'] + catalog['p_merger']) > np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.975)
     axarr[1].scatter(
         10.**catalog.loc[probable_merger, 'logmass_adjusted'],
@@ -812,7 +889,8 @@ def make_figure_merger_fraction_vs_mass(
     dsfs = np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])
     mask = abs(dsfs / sfs_std) < 0.2
 
-    pmerger = catalog['p_merger'] + catalog['p_ambig']
+    pmerger = pd.Series(data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3], index=data['img_names'])
+    pmerger = pmerger.reindex(data['catalog'].index)
 
     out_baseline = sampling.running_metric(
         catalog.loc[mask, 'logmass_adjusted'],
@@ -850,7 +928,7 @@ def make_figure_merger_fraction_vs_mass(
     )
 
     ax.legend()
-    ax.set_yscale('log')
+    #ax.set_yscale('log')
     ax.set_xlabel(ek.common_labels['logmstar'])
     ax.set_ylabel('Merger detection fraction')
 
@@ -892,18 +970,22 @@ def make_figure_merger_prob_vs_dsfs(
     norm = 1.24 * 0.08 - 1.47
     sfs_std = 0.22 * 0.08 + 0.38
     sfs = lambda logmstar: alpha * (logmstar - 8.5) + norm
-
-    pmerger = catalog['p_merger'] + catalog['p_ambig']
+    
+    pmerger = pd.Series(data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3], index=data['img_names'])
+    pmerger = pmerger.reindex(data['catalog'].index)
+    
+    u_pmerger = pd.Series((data['std_prob_labels'][:,2]**2 + data['std_prob_labels'][:,3]**2)**0.5, index=data['img_names'])
+    u_pmerger = u_pmerger.reindex(data['catalog'].index)
 
     # Compute baseline merger probability as function of mass
     dsfs = np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])
     mask = abs(dsfs / sfs_std) < 0.2
-
+    
     out_baseline = sampling.running_metric(
         catalog.loc[mask, 'logmass_adjusted'],
         pmerger.loc[mask],
         np.nanmean,
-        np.linspace(7., 10.25, 12),
+        np.linspace(8., 11., 12),
         erronmetric=True
     )
     pmerger_baseline_by_mass = lambda logmstar: np.interp(
@@ -914,13 +996,17 @@ def make_figure_merger_prob_vs_dsfs(
 
     fig, axarr = plt.subplots(1, 2, figsize=(12, 5))
 
-    logmstar_bins = [7.5] + list(np.arange(8.5, 10., 0.3)) + [12]
+    logmstar_bins = list(np.arange(8.25, 10.5, 0.3)) + [11.]
+    _, logmstar_bins = sampling.bin_by_count(catalog.loc[catalog['logmass_adjusted']>8.25, 'logmass_adjusted'], 500, 0.25 )
     groups = np.digitize(catalog['logmass_adjusted'], logmstar_bins)
     groupids = np.arange(1,len(logmstar_bins))
     cmap = ec.colormap_from_list([colorlists.slides['orange'], plt.cm.coolwarm(0.5), colorlists.slides['bluebird']])
 
-    axarr[0].set_xlim(-0.75, 4.5)
-    axarr[0].set_ylim(0., 1.)
+    axarr[0].set_xlim(-0.75, 3)
+    axarr[0].set_ylim(0., 0.45)
+    
+    mask = data['catalog'].reindex(data['img_names'])['logmass_adjusted']<8.
+    floor = np.mean(data['mean_prob_labels'][mask,2])
     
     for gidx, gid in enumerate(groupids):
         selected = catalog.loc[groups == gid]
@@ -929,33 +1015,39 @@ def make_figure_merger_prob_vs_dsfs(
 
             ms_at_mass = sfs(selected['logmass_adjusted'])
             dsfs = np.log10(calibrations.LHa2SFR(selected['L_Ha'])) - ms_at_mass
-            assns, loglhabins = sampling.bin_by_count(dsfs, 10, 0.25)
+            assns, loglhabins = sampling.bin_by_count(dsfs, 20, 0.25)
             xs = sampling.midpts(loglhabins) / sfs_std
 
             if is_normalized:
-                factor = 1. / pmerger_baseline_by_mass(selected['logmass_adjusted'])
+                factor = 1. / (pmerger_baseline_by_mass(selected['logmass_adjusted'])-floor)
             else:
                 factor = 1.
+                nrml = 1.
+            pm = pmerger.reindex(selected.index) - floor
+            u_pm = u_pmerger.reindex(selected.index)
 
             _, ys, _ = sampling.running_metric(
                 dsfs,
-                pmerger.reindex(selected.index) * factor,
+                pm * factor,
                 np.nanmean,
                 sampling.midpts(loglhabins),
+                yerr=u_pm * factor,
                 erronmetric=True
             )
-
+            
+            if is_normalized:
+                nrml = np.interp(0., xs, ys[:,0,2])
             ek.outlined_plot(
                 xs,
-                ys[:, 0, 2],
+                ys[:, 0, 2]/nrml,
                 lw=2,
                 ax=axarr[idx],
                 color=cmap(gidx / len(groupids))
             )
             axarr[idx].fill_between(
                 xs,
-                ys[:, 0, 1],
-                ys[:, 0, 3],
+                ys[:, 0, 1]/nrml,
+                ys[:, 0, 3]/nrml,
                 label=f'[{logmstar_bins[gid-1]:.2f},{logmstar_bins[gid]:.2f}]',
                 alpha=0.3,
                 color=cmap(gidx / len(groupids))
@@ -963,14 +1055,17 @@ def make_figure_merger_prob_vs_dsfs(
             
             
             if not is_normalized:
-                if gid < 3:
+                if gid < 2:
                     offset = 2
-                elif gid < 4:
-                    offset=1
+                elif gid < 3:
+                    offset = 1
+                elif gid == 6:
+                    offset = -1
                 else:
                     offset = 0
                 slope = (ys[3+offset,0,2]-ys[2+offset,0,2])/(xs[3+offset]-xs[2+offset])
-                
+
+
                 ek.text(
                     sampling.midpts(xs[2+offset:4+offset]),
                     sampling.midpts(ys[2+offset:4+offset,0,2]),
@@ -983,28 +1078,96 @@ def make_figure_merger_prob_vs_dsfs(
                     color=cmap(gidx / len(groupids)),
                     bordercolor='w',
                     borderwidth=3,
-                    fontsize=11
+                    fontsize=12
                 )
+                
+                
+                if gidx == (len(groupids)-1):
+                    offset = -1
+                    slope = (ys[3+offset,0,2]-ys[2+offset,0,2])/(xs[3+offset]-xs[2+offset])
+                    ek.text(
+                        sampling.midpts(xs[2+offset:4+offset]),
+                        sampling.midpts(ys[2+offset:4+offset,0,2]),  
+                        r'$\log_{10}(M_\bigstar/M_\odot)$',
+                        ha='center',
+                        va='bottom',
+                        rotation = np.rad2deg(np.arctan(slope * ek.get_subplot_aspectratio(axarr[idx]))),
+                        coord_type='absolute',
+                        ax=axarr[idx],
+                        color=ec.ColorBase(cmap(0.5)).modulate(-0.2).base,
+                        bordercolor='w',
+                        borderwidth=3,
+                        fontsize=13                      
+                    )                
 
     # Add overall trend to normalized panel
+    mask = (catalog['logmass_adjusted'] > logmstar_bins[0])&(catalog['logmass_adjusted'] < logmstar_bins[-1])
     xs = (np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])) / sfs_std
-    ys = pmerger / pmerger_baseline_by_mass(catalog['logmass_adjusted'])
-    out = sampling.running_metric(xs, ys, np.nanmean, np.arange(-0.5, 4.5, 0.2), dx=0.4, erronmetric=True)
+    ys = (pmerger - floor) / (pmerger_baseline_by_mass(catalog['logmass_adjusted']) - floor)
+    u_ys = u_pmerger / (pmerger_baseline_by_mass(catalog['logmass_adjusted']) - floor)
+    assns, loglhabins = sampling.bin_by_count(xs[(xs>-0.5)&(xs<3.5)], 20, 0.25)
+    out = sampling.running_metric(xs.loc[mask], ys.loc[mask], np.nanmean,sampling.midpts(loglhabins), yerr=u_ys[mask], dx=0.4, erronmetric=True)
+    nrml = np.interp(0., out[0], out[1][:,0,2])
     axarr[1].fill_between(
         out[0],
-        out[1][:, 0, 1],
-        out[1][:, 0, 3],
+        out[1][:, 0, 1]/nrml,
+        out[1][:, 0, 3]/nrml,
         color='grey',
         alpha=0.4,
     )
     ek.outlined_plot(
         out[0],
-        out[1][:, 0, 2],
+        out[1][:, 0, 2]/nrml,
         ax=axarr[1],
         ls='--',
         lw=2
     )
-
+    
+    textcolor=ec.ColorBase(cmap(0.5)).modulate(-0.2).base
+    ek.arrow(
+        -0.5,
+        1.1,
+        0.,
+        10.,
+        ax=axarr[1],
+        color=textcolor,
+    )
+    ek.text(
+        -0.5,
+        1.3, 
+        'more interactions',
+        color=textcolor,
+        va='bottom',
+        ha='right',
+        coord_type='absolute',
+        rotation=90.,
+        ax=axarr[1],
+        fontsize=15,
+    )
+    
+    ek.arrow(
+        0.1,
+        0.6,
+        3.,
+        0.,
+        ax=axarr[1],
+        color=textcolor,
+    )
+    ek.text(
+        1.5,
+        0.6, 
+        'more vigorous star formation',
+        color=textcolor,
+        va='bottom',
+        ha='center',
+        coord_type='absolute',
+        ax=axarr[1],
+        fontsize=15
+    )    
+    
+    lkwargs = {'ls':':', 'color':'lightgrey', 'zorder':-1}
+    axarr[1].axhline(1., **lkwargs)    
+    axarr[1].axvline(0., **lkwargs )
     for ax in axarr:
         ax.set_xlabel(r'$ \mathcal{S} = \frac{\log_{10}[{\rm SFR}/{\rm SFS(M_\bigstar)}]}{\sigma_{\rm SFS}}$', fontsize=20)
     axarr[0].set_ylabel(r'$\langle \rm Pr[interaction] \rangle$')
@@ -1051,7 +1214,7 @@ def make_figure_hamorph_distributions(
         return
 
     pmerger = catalog['p_merger'] + catalog['p_ambig']
-    pmerger_threshold = np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.975)
+    pmerger_threshold =  catalog['p_undisturbed'] #np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.975)
 
     fig, axarr = plt.subplots(1, 3, figsize=(12, 4))
 
@@ -1081,7 +1244,7 @@ def make_figure_hamorph_distributions(
             density=True,
             alpha=0.4,
             lw=2.,
-            color=colorlists.slides['blue'],
+            color=colorlists.slides['bluebird'],
             label='Weighted by Pr[interaction]',
             ax=axarr[idx],
             bins=bins
@@ -1099,7 +1262,7 @@ def make_figure_hamorph_distributions(
         if idx == 0:
             ek.text(0.025, 0.975, 'Unweighted', color='grey', ax=axarr[idx], fontsize=11)
             ek.text(0.025, 0.9, '''Weighted by
-Pr[interaction]''', color=colorlists.slides['blue'], ax=axarr[idx], fontsize=11)
+Pr[interaction]''', color=colorlists.slides['bluebird'], ax=axarr[idx], fontsize=11)
             ek.text(0.025, 0.75, '''High-confidence
 mergers''', color=colorlists.slides['orange'], ax=axarr[idx], fontsize=11)
         axarr[idx].set_xlabel(rf'{labels[idx]}({tags[prefix]})')
@@ -1151,7 +1314,7 @@ def make_figure_hamorph_distributions_by_mass(
 
     # Default mass bins
     if mass_bins is None:
-        mass_bins = [7.5, 9., 10.5]
+        mass_bins = [8., 9.25, 10., 10.5]
 
     n_mass_bins = len(mass_bins) - 1
     pmerger = catalog['p_merger'] + catalog['p_ambig']
@@ -1210,7 +1373,7 @@ def make_figure_hamorph_distributions_by_mass(
                 density=True,
                 alpha=0.4,
                 lw=2.,
-                color=colorlists.slides['blue'],
+                color=colorlists.slides['bluebird'],
                 label='Weighted by Pr[interaction]',
                 ax=axarr[mass_idx, idx],
                 bins=bins
@@ -1218,7 +1381,7 @@ def make_figure_hamorph_distributions_by_mass(
 
             # High-confidence mergers only
             high_conf_mask = pmerger_bin > pmerger_threshold
-            if high_conf_mask.sum() > 0:
+            if high_conf_mask.sum() > 10:
                 ek.hist(
                     hamorph.reindex(catalog_bin.loc[high_conf_mask].index)[morph_key],
                     density=True,
@@ -1262,6 +1425,262 @@ def make_figure_hamorph_distributions_by_mass(
         logger.info(f"Saved: {output_file}")
 
 
+def make_hamorph_differential(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger
+) -> None:
+    """
+    Figure: H-alpha morphology differential analysis by mass bin.
+
+    Shows the ratio of unweighted to merger-weighted distributions for
+    continuum and H-alpha morphology parameters (asymmetry, Gini, M20)
+    across different stellar mass bins.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    """
+    logger.info("Generating Figure: H-alpha morphology differential")
+
+    catalog = data['catalog']
+    hamorph = data['hamorph']
+
+    if hamorph is None:
+        logger.warning("H-alpha morphology data not available, skipping")
+        return
+
+    # Get merger probability CDF
+    cdf = pd.DataFrame({'pmerger': data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3]},
+                       index=data['img_names'])
+
+    # Setup mass bins (matching make_figure_merger_prob_vs_dsfs)
+    _, logmstar_bins = sampling.bin_by_count(
+        catalog.loc[catalog['logmass_adjusted'] > 8.25, 'logmass_adjusted'],
+        1000,
+        0.5
+    )
+    logmstar_bins = np.linspace(8., 10., 5)
+
+    xbins = np.linspace(8., 10.5, 5)
+    
+    dx = 0.75
+    bin_indices = np.arange(len(xbins))
+
+    # Setup colormap (matching make_figure_merger_prob_vs_dsfs)
+    cmap = ec.colormap_from_list([
+        colorlists.slides['orange'],
+        plt.cm.coolwarm(0.5),
+        colorlists.slides['bluebird']
+    ])
+
+    # Create figure with 2 rows (continuum, halpha) and 3 columns (asymmetry, gini, m20)
+    fig, axarr = plt.subplots(2, 2, figsize=(10,8))
+
+    prefixes = ['continuum', 'halpha']
+    keys = ['asymmetry', 'gini']#, 'm20']
+    xlabels = {'asymmetry': 'Asymmetry', 'gini': 'Gini', 'm20': r'M$_{20}$'}
+
+    # Loop over prefixes (rows) and keys (columns)
+    #for ax in axarr.flatten():
+    #    ax.set_ylim(0.3,2.,)
+    
+    
+    for row_idx, prefix in enumerate(prefixes):
+        for col_idx, key in enumerate(keys):
+            ax = axarr[row_idx, col_idx]
+            morph_key = f'{prefix}_{key}'
+            logger.info(f"Processing {morph_key}")
+                        
+            # Define y-bins using quantile clipping
+            eps = 0.05
+            vals = np.quantile(
+                sampling.sigmaclip(
+                    sampling.fmasker(data['hamorph'].reindex(data['catalog'].index)[morph_key].values)
+                ).clipped,
+                [eps, 1 - eps]
+            )
+            ybins = np.linspace(*vals, 100)
+            histybins = np.linspace(*vals, 20)            
+
+            if False:
+                (_,_,spacing), _=ek.histstack(
+                    data['catalog']['logmass_adjusted'].values,
+                    data['hamorph'].reindex(data['catalog'].index)[morph_key].values,
+                    ybins=histybins,
+                    xbins=logmstar_bins,
+                    show_quantile=False,
+                    color=colorlists.slides['grey'],
+                    linewidth=1,
+                    ax=ax,
+                )
+
+                ek.histstack(
+                    data['catalog']['logmass_adjusted'].values,
+                    data['hamorph'].reindex(data['catalog'].index)[morph_key].values,
+                    w=cdf.reindex(data['catalog'].index)['pmerger'].values,
+                    ybins=histybins,
+                    xbins=logmstar_bins,
+                    spacing=spacing,
+                    show_quantile=False,
+                    color=colorlists.slides['bluebird'],
+                    linewidth=1,
+                    ax=ax,
+                )
+
+
+
+            # Assign mass bins
+            assns = np.digitize(data['catalog']['logmass_adjusted'], xbins)
+
+            # Loop over mass bins
+            npull=10
+            modes = np.zeros([len(bin_indices), npull, 2])
+            for gidx, bin_idx in enumerate(bin_indices):
+                mass_mask = (
+                    abs(data['catalog']['logmass_adjusted'] - xbins[bin_idx]) < dx
+                )
+                # Get morphology values for this mass bin
+                morph_vals = data['hamorph'].reindex(data['catalog'].index)[morph_key].values[mass_mask]
+                pmerger_vals = cdf.reindex(data['catalog'].index)['pmerger'].values[mass_mask]
+                morph_vals = np.where(
+                    (morph_vals<ybins[0])|(morph_vals>ybins[-1]),
+                    np.nan,
+                    morph_vals
+                )
+                morph_vals, pmerger_vals = sampling.fmasker(morph_vals,pmerger_vals)
+            
+                # Bootstrap histogram counts
+                
+                ratio = np.zeros([npull, len(ybins)])
+                #modes = np.zeros([npull, 2])
+                for _ in range(npull):
+                    choice = np.random.choice(range(len(morph_vals)), size=len(morph_vals), replace=True)
+                    choice2 = np.random.choice(range(len(morph_vals)), size=len(morph_vals), replace=True)
+                    c_morph_vals = morph_vals[choice]      
+                    b_morph_vals = morph_vals[choice2]              
+                    c_pmerger_vals = pmerger_vals[choice]
+                    b_pmerger_vals = pmerger_vals[choice2]
+                    dwass = stats.wasserstein_distance(c_morph_vals, b_morph_vals, v_weights=b_pmerger_vals)
+                    #dwass = stats.wasserstein_distance(c_morph_vals, b_morph_vals)
+                    dwass_ref = stats.wasserstein_distance(c_morph_vals, b_morph_vals)
+                    modes[gidx,_,1] = dwass
+                    modes[gidx,_,0] = dwass_ref
+                    if False:
+                        modes[gidx,_,0] = np.mean(c_morph_vals)
+                        modes[gidx,_,1] = np.sum(c_morph_vals*c_pmerger_vals)/np.sum(c_pmerger_vals)
+                        continue
+                        uw_gkde = gaussian_kde(c_morph_vals, )
+                        w_gkde = gaussian_kde(c_morph_vals, weights=c_pmerger_vals)
+                        ratio[_] = w_gkde(ybins)/uw_gkde(ybins)
+                        modes[gidx,_,0] = ybins[np.argmax(uw_gkde(ybins))]
+                        modes[gidx,_,1] = ybins[np.argmax(w_gkde(ybins))]
+                
+                # Get color for this mass bin
+                color = cmap(gidx / len(bin_indices))
+               
+                #ax.plot(
+                #    ybins,
+                #    ratio_median,
+                #    color=color,
+                #    lw=2
+                #)
+                #ax.fill_between(
+                #    ybins,
+                #    ratio_16,
+                #    ratio_84,
+                #    alpha=0.3,
+                #    color=color
+                #)
+
+                # Add in-line legend (only for middle column to avoid clutter)
+                #if col_idx == 0:
+                #    # Find a good y-position for the label
+                #    #mid_idx = len(ratio_median) // 2
+                #    #label_y = ratio_median[mid_idx]
+
+                #    ek.text(
+                #        0.975,
+                #        0.025 + (bin_idx-1)*.075,
+                #        #sampling.midpts(ybins)[mid_idx],
+                #        #label_y,
+                #        f'[{xbins[bin_idx-1]:.2f},{xbins[bin_idx]:.2f}]',
+                #        color=color,
+                #        fontsize=12,
+                #        #bbox=dict(boxstyle='round,pad=0.3', #facecolor='white', edgecolor='none', alpha=0.7),
+                #        ax=ax
+                #    )
+
+            # Plot
+            eps = 0.025
+            for idx, cc in enumerate(['grey', colorlists.slides['bluebird']]):
+                if False:
+                    ek.outlined_plot(
+                        xbins,
+                        np.median(modes[:,:,idx], axis=1),
+                        ax=ax,
+                        color=cc,
+                    )
+                    ax.fill_between(
+                        xbins,
+                        np.quantile(modes[:,:,idx], eps,axis=1),
+                        np.quantile(modes[:,:,idx], 1.-eps,axis=1),                
+                        color=cc,
+                        alpha=0.3
+                    )   
+                else:
+                    ek.errorbar(
+                        xbins,
+                        np.median(modes[:,:,idx], axis=1),
+                        ylow=np.quantile(modes[:,:,idx], eps,axis=1),
+                        yhigh=np.quantile(modes[:,:,idx], 1.-eps,axis=1),
+                        color=cc,  
+                        ax=ax                      
+                    )         
+
+            # Add grey legend title above the most massive bin (only for middle column)
+            #if col_idx==0:                
+            #    ek.text(
+            #        0.975,
+            #        0.025 + (bin_idx+1)*0.075,
+            #        r'$\log_{10}(M_\bigstar/M_\odot)$',
+            #        ax=ax,
+            #        ha='right',
+            #        va='top',
+            #        color=ec.ColorBase(cmap(0.5)).modulate(-0.2).base,
+            #        fontsize=11,
+            #        coord_type='relative'
+            #    )
+
+            # Add horizontal line at y=1
+            #ax.axhline(1., color='grey', ls=':', zorder=-1)
+
+            # Add prefix label (continuum or halpha)
+            prefix_label = 'continuum' if prefix == 'continuum' else r'H$\alpha$'
+            ek.text(0.025, 0.975, prefix_label, ax=ax, fontsize=14, ha='left', va='top')
+
+            # Add x-label
+            ax.set_xlabel(xlabels[key])
+
+            # Add y-label (only for first column)
+            #if col_idx == 0:
+            ax.set_ylabel('Wasserstein distance')
+
+    plt.tight_layout()
+    if output_dir is not None:
+        output_file = output_dir / 'fig_hamorph_differential.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        logger.info(f"Saved: {output_file}")
+    return axarr
+
+
 def make_figure_gini_m20_space(
     data: Dict,
     output_dir: Path,
@@ -1294,13 +1713,7 @@ def make_figure_gini_m20_space(
     pmerger = catalog['p_merger'] + catalog['p_ambig']
 
     fig, ax = plt.subplots(figsize=(7, 6))
-    cmap = ec.colormap_from_list([
-        ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base, 
-        colorlists.slides['orange'], 
-        plt.cm.coolwarm(0.5), 
-        colorlists.slides['bluebird'],
-        ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base, 
-    ])
+
     
     ek.pcolor_avg2d(
         hamorph.reindex(catalog.index)['continuum_m20'],
@@ -1339,6 +1752,443 @@ def make_figure_gini_m20_space(
     plt.close()
 
     logger.info(f"Saved: {output_file}")
+
+
+def make_hamorph_differential_split(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger
+) -> pd.DataFrame:
+    """
+    Figure: H-alpha and Continuum morphology differential analysis by mass bin (split into two figures).
+
+    Creates two separate figures (one for continuum, one for H-alpha), each showing:
+    - Top row: Cumulative distribution functions for asymmetry and Gini
+    - Bottom row: Differential (unweighted CDF - weighted CDF) for asymmetry and Gini
+
+    Each morphology parameter is color-coded by stellar mass bin.
+
+    Also performs Kolmogorov-Smirnov tests on weighted vs. unweighted morphology distributions.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+
+    Returns
+    -------
+    pvals_df : pd.DataFrame
+        DataFrame with KS test p-values indexed by (tracer, morphstat, mass_bin) with columns
+        ['p_lesser', 'p_greater', 'p_twosided'] corresponding to one-sided and two-sided KS tests.
+        lesser: weighted sample skews higher
+        greater: weighted sample skews lower
+    """
+    logger.info("Generating Figure: H-alpha and Continuum morphology differential (split)")
+
+    catalog = data['catalog']
+    hamorph = data['hamorph']
+
+    if hamorph is None:
+        logger.warning("H-alpha morphology data not available, skipping")
+        return
+
+    # Get merger probability CDF
+    cdf = pd.DataFrame({'pmerger': data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3]},
+                       index=data['img_names'])
+
+    # Setup mass bins and colormap
+    xbins = np.linspace(8.25, 10., 10)
+    dx = 1.0
+
+    # Y-bins for different tracers and morphology stats
+    ybins_dict = {
+        'continuum': {
+            'asymmetry': np.linspace(-0.4, 0.5, 30),
+            'gini': np.linspace(0.3, 0.7, 30)
+        },
+        'halpha': {
+            'asymmetry': np.linspace(-0.5, 0.75, 30),
+            'gini': np.linspace(0.35, 0.8, 30)
+        }
+    }
+
+    # Y-limits for differential plots
+    ylims = {'asymmetry': (-0.05, 0.15), 'gini': (-0.04, 0.1)}
+
+    # Morphology parameters
+    morphstats = ['asymmetry', 'gini']
+    morphlabels = [r'$\mathcal{A}$', r'$\mathcal{G}$']
+    morph_names = ['asymmetry', 'Gini']
+
+    # Tracers
+    tracers = ['continuum', 'halpha']
+    tracer_sub = ['c', r'\rm H\alpha']
+    tracer_names = ['continuum', r'H$\alpha$']
+
+    # Initialize dictionary to store KS test p-values
+    # Structure: pvals_dict[(tracer, morphstat, mass_bin)] = (p_lesser, p_greater, p_twosided)
+    pvals_dict = {}
+
+    # Loop through tracers to create two separate figures
+    for tdx, tracer in enumerate(tracers):
+        logger.info(f"  Generating {tracer} figure...")
+
+        # Create figure with 2x2 grid
+        fig, axarr = plt.subplots(2, 2, figsize=(10, 6))
+
+        # Loop through morphology statistics
+        for mdx, ms in enumerate(morphstats):
+            key = f'{tracer}_{ms}'
+
+            # Get axes for this morphology stat
+            ax = axarr[0, mdx]  # Top row: CDF
+            bx = axarr[1, mdx]  # Bottom row: Differential
+
+            # Get y-bins for this tracer and morphology stat
+            ybins = ybins_dict[tracer][ms]
+
+            # Set x-limits
+            ax.set_xlim(ybins[0], ybins[-1])
+            bx.set_xlim(ybins[0], ybins[-1])
+
+            # Loop over mass bins
+            for mass_idx, mass_mid in enumerate(xbins):
+                mass_mask = abs(data['catalog']['logmass_adjusted'].values - mass_mid) < dx
+
+                # Get color for this mass bin
+                cc = cmap((mass_mid - xbins.min()) / (xbins.max() - xbins.min()))
+
+                # Get morphology and weight values for this mass bin
+                morph_values = data['hamorph'].reindex(data['catalog'].index)[key].values[mass_mask]
+                weight_values = cdf.reindex(data['catalog'].index)['pmerger'].values[mass_mask]
+
+                # Unweighted cumulative histogram
+                out = ek.hist(
+                    morph_values,
+                    cumulative=True,
+                    density=True,
+                    histtype='step',
+                    ax=ax,
+                    color=cc,
+                    bins=ybins,
+                    lw=2
+                )
+                unweighted_counts = out[1][0]
+
+                # Weighted histogram
+                out = np.histogram(
+                    morph_values,
+                    weights=weight_values,
+                    bins=ybins,
+                    density=True,
+                )
+
+                # Convert to cumulative
+                weighted_counts = np.cumsum(out[0]) / np.sum(out[0])
+
+                # Plot differential
+                bx.step(
+                    sampling.midpts(ybins),
+                    unweighted_counts - weighted_counts,
+                    where='mid',
+                    color=cc,
+                    lw=2
+                )
+
+                # Perform KS tests on weighted vs unweighted samples
+                # Create weighted morphology sample using random choice with probability weights
+                morph_samp = morph_values.copy()
+                ps = np.where(np.isfinite(morph_samp), weight_values, 0.)
+
+                # Generate weighted sample by random choice
+                if np.sum(ps) > 0:
+                    wmorph_samp = np.random.choice(
+                        morph_samp,
+                        p=ps / np.sum(ps),
+                        replace=True,
+                        size=morph_samp.size
+                    )
+
+                    # KS tests: lesser = weighted skews higher, greater = weighted skews lower
+                    weighted_towards_lesser = stats.ks_2samp(
+                        *sampling.fmasker(morph_samp, wmorph_samp),
+                        alternative='lesser'
+                    )
+                    weighted_towards_greater = stats.ks_2samp(
+                        *sampling.fmasker(morph_samp, wmorph_samp),
+                        alternative='greater'
+                    )
+                    weighted_is_same = stats.ks_2samp(
+                        *sampling.fmasker(morph_samp, wmorph_samp),
+                        alternative='two-sided'
+                    )
+
+                    # Store p-values
+                    pvals_dict[(tracer, ms, mass_mid)] = (
+                        weighted_towards_lesser.pvalue,
+                        weighted_towards_greater.pvalue,
+                        weighted_is_same.pvalue
+                    )
+                else:
+                    # No valid weights, store NaN
+                    pvals_dict[(tracer, ms, mass_mid)] = (np.nan, np.nan, np.nan)
+
+            # Add horizontal line at 0 for differential plot
+            bx.axhline(0., ls=':', color='lightgrey')
+
+            # Add colorbar to first subplot only
+            if mdx == 0:
+                ek.colorbar_inset(
+                    cmap,
+                    xbins[0],
+                    xbins[-1],
+                    x=0.7,
+                    y=0.1,
+                    height=0.6,
+                    width=0.05,
+                    label=ek.common_labels['logmstar'],
+                    orientation='vertical',
+                    ax=ax
+                )
+
+            # Labels
+            mlbl = rf'{morphlabels[mdx]}$_{{{tracer_sub[tdx]}}}$'
+            bx.set_xlabel(rf'{mlbl}$=${morph_names[mdx].capitalize()}, {tracer_names[tdx]}')
+            ax.set_ylabel(rf'F({mlbl})')
+            bx.set_ylabel(rf'F({mlbl}) - F$_w$({mlbl})', labelpad=-10)
+            ax.set_xticks([])
+            bx.set_ylim(ylims[ms])
+            bx.set_yticks(bx.get_yticks()[:-1])
+
+        # Adjust layout
+        plt.tight_layout()
+        plt.subplots_adjust(wspace=0.35, hspace=0.02)
+
+        # Add colored background to differential plots
+        for ax in axarr[1]:
+            ax.autoscale(enable=False, axis='y')
+
+            # Red background for positive values (shifted higher)
+            ax.axhspan(
+                0.,
+                ax.get_ylim()[1],
+                color=ec.ColorBase(colorlists.slides['red']).modulate(0.5).base,
+                zorder=-1
+            )
+            # Yellow background for negative values (shifted lower)
+            ax.axhspan(
+                ax.get_ylim()[0],
+                0.,
+                color=ec.ColorBase(colorlists.slides['yellow']).modulate(0.3).base,
+                zorder=-1
+            )
+
+        # Add annotation text to first differential subplot
+        ax_text = axarr[1, 0]
+        ek.text(
+            0.975,
+            0.025,
+            '''Pr[TF]-weighted
+PDF shifted lower''',
+            color=ec.ColorBase(colorlists.slides['yellow']).modulate(-0.3).base,
+            ax=ax_text,
+            fontsize=12
+        )
+        ek.text(
+            0.975,
+            0.975,
+            '''Pr[TF]-weighted
+PDF shifted
+higher''',
+            color=colorlists.slides['red'],
+            ax=ax_text,
+            fontsize=12
+        )
+
+        # Save figure
+        if output_dir is not None:
+            output_file = output_dir / f'fig_hamorph_differential_{tracer}.pdf'
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Saved: {output_file}")
+        else:
+            plt.show()
+
+    # Convert p-values dictionary to DataFrame
+    # Create multi-index from dictionary keys
+    index_tuples = list(pvals_dict.keys())
+    index = pd.MultiIndex.from_tuples(index_tuples, names=['tracer', 'morphstat', 'mass_bin'])
+
+    # Create DataFrame with p-value columns
+    pvals_df = pd.DataFrame(
+        list(pvals_dict.values()),
+        index=index,
+        columns=['p_lesser', 'p_greater', 'p_twosided'],
+    ).round(2)
+    pvals_df['description'] =  ''
+    for name,row in pvals_df.iterrows():
+        s = ''
+        if row.p_twosided > 0.05:
+            s = 'Statistically indistinct from reference;'
+        else:
+            #if (row.p_lesser > 0.05) and (row.p_greater>0.05):
+            #    s = 'Statistically indistinguishable between shifted down and up'
+            if row.p_lesser > 0.05:
+                s = s + 'Consistent with f_w shifted higher;'
+            if row.p_greater > 0.05:
+                s = s + 'Consistent with f_w shifted lower;'
+        if s == '':
+            s = 'Statistically distinct from ref w/o monotonic shift'
+        s = s.strip(';')
+        pvals_df.loc[name, 'description'] = s
+    logger.info(f"Computed KS test p-values for {len(pvals_df)} combinations")
+
+    return pvals_df
+
+
+def mk_appendix_metric(
+    output_dir: Path,
+    logger: logging.Logger,
+    n_samples: int = 3000,
+    base_mean: float = 3.0,
+    base_std: float = 1.0
+) -> None:
+    """
+    Appendix Figure: Demonstration of differential CDF metric using synthetic data.
+
+    Creates a diagnostic figure showing how the differential CDF metric responds to
+    controlled shifts in distribution mean and standard deviation. Four test cases
+    are shown with known parameter shifts.
+
+    Parameters
+    ----------
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    n_samples : int, optional
+        Number of samples to generate for each distribution (default: 3000)
+    base_mean : float, optional
+        Mean of the base distribution (default: 3.0)
+    base_std : float, optional
+        Standard deviation of the base distribution (default: 1.0)
+    """
+    logger.info("Generating Appendix Figure: Differential CDF metric demonstration")
+
+    # Generate base distributions (same for all 4 test cases)
+    xs = [
+        np.random.normal(base_mean, base_std, n_samples),
+        np.random.normal(base_mean, base_std, n_samples),
+        np.random.normal(base_mean, base_std, n_samples),
+        np.random.normal(base_mean, base_std, n_samples)
+    ]
+
+    # Define parameter shifts: (delta_mean, delta_std)
+    params = [(0.1, 0.), (-0.1, 0.), (0., 0.1), (0., -0.1)]
+
+    # Generate shifted distributions
+    ys = [
+        np.random.normal(base_mean + p[0], base_std + p[1], n_samples)
+        for p in params
+    ]
+
+    # Create figure
+    fig, axarr = plt.subplots(2, 4, figsize=(12, 5.5))
+
+    # Loop through each test case
+    for colidx in range(len(ys)):
+        x = xs[colidx]
+        y = ys[colidx]
+
+        # Compute bins from combined data quantiles
+        eps = 1e-3
+        bins = np.linspace(*np.quantile(np.concatenate([x, y]), [eps, 1. - eps]), 30)
+
+        # Top panel: PDFs
+        ax = axarr[0, colidx]
+        ek.hist(x, density=True, alpha=0.3, lw=2, ax=ax, bins=bins, color='grey')
+        ek.hist(y, density=True, alpha=0.3, lw=2, ax=ax, bins=bins)
+
+        # Compute CDFs
+        out = np.histogram(x, density=True, bins=bins)
+        unweighted_counts = np.cumsum(out[0]) / np.sum(out[0])
+        out = np.histogram(y, density=True, bins=bins)
+        weighted_counts = np.cumsum(out[0]) / np.sum(out[0])
+
+        # Bottom panel: Differential CDF
+        ax = axarr[1, colidx]
+        ax.autoscale(enable=False, axis='y')
+        ax.step(
+            sampling.midpts(bins),
+            unweighted_counts - weighted_counts,
+            where='mid',
+            lw=2,
+        )
+        ax.set_ylim(-0.06, 0.06)
+        
+        ax.axhline(0., ls=':', color='grey')
+
+        # Add parameter annotations
+        dm, ds = params[colidx]
+        ek.text(
+            0.025,
+            0.975,
+            rf'''$\Delta \mu = {{{dm:.1f}}}$
+$\Delta \sigma = {{{ds:.1f}}}$''',
+            ax=axarr[0, colidx]
+        )
+
+        # Clean up tick labels
+        axarr[0, colidx].set_xticklabels([])
+        if colidx == 0:  # Only modify y-tick labels for leftmost column
+            yticks = axarr[1, colidx].get_yticks()
+            axarr[1, colidx].set_yticks(yticks[:-1])  # Remove only the last (topmost) tick
+            axarr[1,colidx].set_ylim(-0.06,0.06)
+
+    # Hide y-tick labels for all but leftmost column
+    for ax in axarr[:, 1:].flatten():
+        ax.set_yticklabels([])
+
+    # Adjust layout
+    plt.tight_layout()
+    plt.subplots_adjust(hspace=0.0, wspace=0.)
+
+    # Add colored backgrounds to differential plots
+    for ax in axarr[1]:
+        
+
+        # Red background for positive values (shifted higher)
+        ax.axhspan(
+            0.,
+            ax.get_ylim()[1],
+            color=ec.ColorBase(colorlists.slides['red']).modulate(0.5).base,
+            zorder=-1
+        )
+        # Yellow background for negative values (shifted lower)
+        ax.axhspan(
+            ax.get_ylim()[0],
+            0.,
+            color=ec.ColorBase(colorlists.slides['yellow']).modulate(0.3).base,
+            zorder=-1
+        )
+        ax.set_xlabel('x')
+
+    # Set y-axis label for top-left panel
+    axarr[0, 0].set_ylabel(r'$F(x)$')
+    axarr[1, 0].set_ylabel(r'$F_a(x) - F_b(x)$')
+
+    # Save figure
+    if output_dir is not None:
+        output_file = output_dir / 'fig_appendix_differential_metric.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved: {output_file}")
+    else:
+        plt.show()
 
 
 def make_figure_merger_prob_vs_environment(
@@ -1574,7 +2424,10 @@ Examples:
         logger.info(f"Output directory: {output_dir}")
 
         # Load data
-        data = load_data(config, logger)
+        #data = load_data(config, logger)
+        data = load_data_multirun(Path('../output/'), 
+                                  ['fiducial'] + [ f'fiducial_rerun_{ix}' for ix in range(5)],
+                                  logger)
 
         # Determine which figures to generate
         if args.figures:
