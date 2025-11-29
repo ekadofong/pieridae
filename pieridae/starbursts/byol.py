@@ -1593,6 +1593,7 @@ def load_merian_images(
     logger.info("Counting valid images...")
     valid_files = []
     img_shape = None
+    
 
     for fname in tqdm(filenames, desc="Validating files"):
         g_file = fname.replace('_i_', '_g_')
@@ -1603,6 +1604,11 @@ def load_merian_images(
                 with open(i_file, 'rb') as f:
                     xf = pickle.load(f)
                     img_shape = xf['image'].shape
+                    
+                    # \\ remove sources with very large masked areas
+                    #mask = xf['mask']
+                    #masked_fraction = (mask>0).sum ()/mask.size
+                
             valid_files.append(fname)
 
     n_images = len(valid_files)
