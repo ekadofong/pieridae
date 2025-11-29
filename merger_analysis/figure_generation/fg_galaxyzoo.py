@@ -48,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 from pieridae.starbursts.byol import (
     EmbeddingAnalyzer,
     LabelPropagation,
+    FrozenClassifier,
 )
 from pieridae.starbursts import sample
 from ekfplot import plot as ek, colorlists
@@ -208,22 +209,46 @@ def load_data(config: dict, logger: logging.Logger) -> Dict:
         data['labels'] = labels
         data['label_meanings'] = {0: 'unclassified'}
 
-    # Run label propagation
-    logger.info("Running label propagation...")
-    n_neighbors = config.get('labels', {}).get('n_neighbors', 50)
-    n_min = config.get('labels', {}).get('minimum_labeled_neighbors', 5)
-    n_min_auto = config.get('labels', {}).get('minimum_labeled_neighbors_for_autoprop', 10)
+    # Run classification (either NN-based FrozenClassifier or K-NN LabelPropagation)
+    model_checkpoint_path = config.get('labels', {}).get('model_checkpoint_path')
 
-    propagator = LabelPropagation(
-        n_neighbors=n_neighbors,
-        n_min=n_min,
-        n_min_auto=n_min_auto,
-        prob_threshold=config.get('labels', {}).get('prob_threshold', 0.9),
-        frag_threshold=config.get('labels', {}).get('frag_threshold', 0.25),
-    )
+    if model_checkpoint_path and Path(model_checkpoint_path).exists():
+        # Use neural network classifier
+        logger.info("Using FrozenClassifier (neural network-based classification)...")
+        logger.info(f"Loading model from: {model_checkpoint_path}")
 
-    iterative_labels, n_labels_iter, prob_labels_iter, stats = \
-        propagator.iterative_propagation(embeddings_pca, labels, handle_fragmentation_separately=False, handle_mergers_separately=False)
+        classifier = FrozenClassifier(
+            model_path=Path(model_checkpoint_path),
+            config=config,
+            logger=logger
+        )
+
+        # FrozenClassifier uses raw embeddings (not PCA-reduced)
+        iterative_labels, n_labels_iter, prob_labels_iter, stats = \
+            classifier.iterative_propagation(embeddings, labels)
+
+        logger.info("Neural network classification complete")
+    else:
+        # Fall back to K-NN label propagation
+        if model_checkpoint_path:
+            logger.warning(f"Model checkpoint not found: {model_checkpoint_path}")
+        logger.info("Using K-NN label propagation...")
+
+        n_neighbors = config.get('labels', {}).get('n_neighbors', 50)
+        n_min = config.get('labels', {}).get('minimum_labeled_neighbors', 5)
+        n_min_auto = config.get('labels', {}).get('minimum_labeled_neighbors_for_autoprop', 10)
+
+        propagator = LabelPropagation(
+            n_neighbors=n_neighbors,
+            n_min=n_min,
+            n_min_auto=n_min_auto,
+            prob_threshold=config.get('labels', {}).get('prob_threshold', 0.9),
+            frag_threshold=config.get('labels', {}).get('frag_threshold', 0.25),
+        )
+
+        # LabelPropagation uses PCA-reduced embeddings
+        iterative_labels, n_labels_iter, prob_labels_iter, stats = \
+            propagator.iterative_propagation(embeddings_pca, labels, handle_fragmentation_separately=False, handle_mergers_separately=False)
 
     data['iterative_labels'] = iterative_labels
     data['n_labels_iter'] = n_labels_iter
@@ -366,6 +391,11 @@ def make_figure_galaxyzoo(
     )
 
 
+    gzp_counts = sampling.bootstrap_histcounts(
+        catalog.reindex(gzmatch.index).loc[hasvotes, 'rmag'],
+        weights = gzmatch.loc[hasvotes, 'DEOyes'],
+        **histkwargs
+    )
     gzhc_counts = sampling.bootstrap_histcounts(
         catalog.reindex(gzmatch.index).loc[hasvotes & (gzmatch['DEOyes'] > 0.5), 'rmag'],
         **histkwargs
@@ -421,12 +451,14 @@ def make_figure_galaxyzoo(
 
     # Left panel: EoD fraction
     ax0 = fig.add_subplot(gs[0])
-    qplot(pweighted_counts / fullgz_counts, color=colorlists.slides['bluebird'],lw=2,
-          ax=ax0, label='Pr[EoD]-weighted (GZ sample)',)
-    qplot(gzhc_counts / fullgz_counts, colorlists.slides['orange'],
-          ax=ax0, label='GZ classification', type='errorbar')
-    #qplot(pweighted_fullcounts / full_counts, colorlists.slides['red'],
-    #      label='Pr[EoD]-weighted (all)', ls='-', ax=ax0, lw=2)
+    #qplot(pweighted_counts / fullgz_counts, color=colorlists.slides['bluebird'],lw=2,
+    #      ax=ax0, label='Pr[EoD]-weighted (GZ sample)',)
+    qplot(gzp_counts / fullgz_counts, colorlists.slides['orange'],
+          ax=ax0, label='GZ classification', type='errorbar')    
+    #qplot(gzhc_counts / fullgz_counts, colorlists.slides['orange'],
+    #      ax=ax0, label='GZ classification', type='errorbar')
+    qplot(pweighted_fullcounts / full_counts, colorlists.slides['bluebird'],
+          label='Pr[EoD]-weighted (all)', ls='-', ax=ax0, lw=2)
 
     ax0.legend(fontsize=12)
     ax0.set_ylim(0., 0.5)
