@@ -39,6 +39,8 @@ import numpy as np
 from scipy import stats
 import pandas as pd
 import torch
+import cmasher
+from astropy.io import fits
 import matplotlib
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -57,15 +59,231 @@ from pieridae.starbursts.byol import (
 from pieridae.starbursts import sample
 from ekfplot import plot as ek, colors as ec, colorlists
 from ekfphys import calibrations
-from ekfstats import sampling
+from ekfstats import sampling, functions
 
 cmap = ec.colormap_from_list([
-    ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base, 
-    colorlists.slides['orange'], 
-    plt.cm.coolwarm(0.5), 
+    ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base,
+    colorlists.slides['orange'],
+    plt.cm.coolwarm(0.5),
     colorlists.slides['bluebird'],
-    ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base, 
+    ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base,
 ])
+
+cmap_dsfs = ec.colormap_from_list([colorlists.slides['orange'], plt.cm.coolwarm(0.5), colorlists.slides['bluebird']])
+
+cmap_alt = ec.colormap_from_list([
+    ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base,
+    colorlists.slides['orange'],
+    plt.cm.coolwarm(0.5),
+    colorlists.slides['bluebird'],
+    ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base,
+])
+
+custom_arctic = ec.shift_colormap_hue_hcl(
+    cmasher.arctic,
+    ec.find_optimal_hue_shift(cmasher.arctic, '#00B0D3')[0]
+)
+
+def sfs(logmstar):
+    """
+    Star-forming sequence (SFS) relation.
+
+    Computes the expected log(SFR) for a given stellar mass based on
+    the star-forming sequence relation.
+
+    Parameters
+    ----------
+    logmstar : float or array-like
+        Log10 of stellar mass in solar masses
+
+    Returns
+    -------
+    log_sfr_sfs : float or array-like
+        Log10 of expected SFR from the star-forming sequence in M_sun/yr
+    """
+    alpha = -0.13 * 0.08 + 0.8
+    norm = 1.24 * 0.08 - 1.47
+    return alpha * (logmstar - 8.5) + norm
+
+
+class ToyModel:
+    """
+    Toy model for starburst signal from internal vs merger-driven processes.
+
+    Models probability distributions for:
+    - Internal SFR variations (pdf_s_internal)
+    - External merger-driven SFR boost (pdf_s_external)
+    - Observability as merger (pdf_obs_ms)
+
+    Parameters
+    ----------
+    tau_ext : callable, optional
+        Width function for external PDF: tau_ext(logmstar, xi)
+        Default: lambda logmstar, xi: xi + 0.5
+    s_ext : callable, optional
+        Center function for external PDF: s_ext(logmstar, xi)
+        Default: lambda logmstar, xi: xi
+    tau_int : callable, optional
+        Width function for internal PDF: tau_int(logmstar)
+        Default: lambda logmstar: 1.
+    """
+
+    def __init__(self, tau_ext=None, s_ext=None, tau_int=None):
+        if tau_int is None:
+            tau_int = lambda logmstar: 1.
+        if tau_ext is None:
+            tau_ext = lambda logmstar, xi: xi + 0.5
+        if s_ext is None:
+            s_ext = lambda logmstar, xi: xi
+
+        self.pdf_s_internal = lambda s, logmstar: np.exp(-s**2/tau_int(logmstar)**2)
+        self.pdf_s_external = lambda s, logmstar, xi: np.exp(-(s-s_ext(logmstar,xi))**2/tau_ext(logmstar, xi)**2)
+
+        tau_obs = lambda logmsecondary: 1.
+        self.pdf_obs_ms = lambda logmsecondary, xi: np.sqrt(xi)*functions.sigmoid(logmsecondary, 8.5, 5.)
+
+        self.smf_approx = lambda logmstar: (10.**(logmstar-11.))**-0.41
+
+    def sample(self, logmstar, nsamp, f_merger=1.):
+        """
+        Generate synthetic sample of galaxies.
+
+        Parameters
+        ----------
+        logmstar : float
+            Log10 stellar mass of primary galaxy
+        nsamp : int
+            Number of samples to generate
+        f_merger : float
+            Fraction of galaxies experiencing mergers (default: 1.0)
+
+        Returns
+        -------
+        tuple
+            (logmstar_sample, s_values, xi_values, observed_as_merger)
+            - logmstar_sample: array of primary masses (all equal to logmstar)
+            - s_values: starburst signal strength
+            - xi_values: mass ratio (0 for non-interacting galaxies)
+            - observed_as_merger: boolean array of observability
+        """
+        logmstar_sample = np.full(nsamp, logmstar)
+        ms_values = sampling.sample_from_pdf((7., logmstar), self.smf_approx, nsamp=logmstar_sample.size, is_bounds=True)
+        xi_values = 10.**(ms_values-logmstar_sample)
+
+        # Pre-compute the grid once
+        ngrid = 100
+        s_grid = np.linspace(0., 4., ngrid)
+        xi_grid = np.logspace(np.log10(xi_values.min()), 0., ngrid)
+
+        xi_assns = np.digitize(xi_values, xi_grid)
+        s_values = np.zeros_like(xi_values)
+        for xi_idx in np.unique(xi_assns):
+            mean_xi = np.mean(xi_values[xi_assns==xi_idx])
+            c_pdf = self.pdf_s_external(s_grid, logmstar, mean_xi)
+            c_pdf /= c_pdf.sum()
+            s_values[xi_assns==xi_idx] = np.random.choice(
+                s_grid,
+                p=c_pdf,
+                size=(xi_assns==xi_idx).sum(),
+                replace=True
+            )
+
+        # Replace 1 - f_merger with internal SFR
+        not_interacting = np.random.uniform(0., 1., s_values.size) >= f_merger
+        i_pdf = self.pdf_s_internal(s_grid, logmstar)
+        i_pdf /= i_pdf.sum()
+        s_values[not_interacting] = np.random.choice(
+            s_grid,
+            p=i_pdf,
+            size=not_interacting.sum(),
+            replace=True
+        )
+
+        observed_as_merger = np.random.uniform(0., 1., s_values.size) <= self.pdf_obs_ms(ms_values, xi_values)
+        observed_as_merger[not_interacting] = False
+        xi_values[not_interacting] = 0.
+
+        return logmstar_sample, s_values, xi_values, observed_as_merger
+
+
+def generate_toymodel_data(logger: logging.Logger = None) -> Dict:
+    """
+    Generate synthetic toy model data for three model variants.
+
+    Creates samples from three different toy models to explore how
+    internal vs merger-driven starbursts affect observed merger signals.
+
+    Parameters
+    ----------
+    logger : logging.Logger, optional
+        Logger instance
+
+    Uses hard-coded defaults:
+    - nsamp = 100,000 samples per mass bin
+    - f_merger = 0.5 (50% merger fraction)
+    - mass_keys = np.arange(8., 10., 0.25)
+
+    Returns
+    -------
+    dict
+        Dictionary with structure:
+        {
+            'models': {
+                'flat': (ToyModel instance, sample_dict),
+                'data': (ToyModel instance, sample_dict),
+                'int': (ToyModel instance, sample_dict)
+            },
+            'mass_keys': array of mass bins,
+            'nsamp': number of samples,
+            'f_merger': merger fraction
+        }
+        where sample_dict[mass] = (logmstar_sample, s_values, xi_values, observed_as_merger)
+    """
+    # Hard-coded defaults
+    nsamp = 100_000
+    f_merger = 0.5
+    mass_keys = np.arange(8., 10., 0.25)
+
+    if logger:
+        logger.info(f"Generating toy model data: nsamp={nsamp}, f_merger={f_merger}, mass_bins={len(mass_keys)}")
+
+    # Create three model variants
+    models = [
+        ToyModel(
+            tau_ext=lambda logmstar, xi: 1.,
+            s_ext=lambda logmstar, xi: 0.,
+            tau_int=lambda logmstar: (10.1 - logmstar) * 0.75
+        ),
+        ToyModel(
+            tau_ext=lambda logmstar, xi: 1.,
+            s_ext=lambda logmstar, xi: xi,
+            tau_int=lambda logmstar: 0.75
+        ),
+        ToyModel(
+            tau_ext=lambda logmstar, xi: 1.,
+            s_ext=lambda logmstar, xi: xi,
+            tau_int=lambda logmstar: (10.1 - logmstar) * 0.75
+        )
+    ]
+
+    tags = ['flat', 'data', 'int']
+    model_d = {}
+
+    for idx, tm in enumerate(models):
+        sample_d = {}
+        for lm in mass_keys:
+            sample_d[lm] = tm.sample(lm, nsamp, f_merger=f_merger)
+        model_d[tags[idx]] = (tm, sample_d)
+
+    if logger:
+        logger.info(f"Toy model data generation complete")
+
+    return {
+        'models': model_d,
+        'mass_keys': mass_keys,
+        'nsamp': nsamp,
+        'f_merger': f_merger
+    }
 
 
 def setup_logging(level: str = 'INFO') -> logging.Logger:
@@ -126,8 +344,216 @@ def load_image_by_name(img_name: str, data_path: Path) -> np.ndarray:
             img.append(xf['image'])
             if band_file == i_file:
                 img.append(xf['hf_image'])
+                img.append(xf['mask'])
 
     return np.array(img, dtype=np.float32)
+
+
+def load_bbmb_cutout(
+    img_name: str,
+    catalog: pd.DataFrame,
+    cutout_base_path: Path,
+    logger: Optional[logging.Logger] = None
+) -> Optional['pixels.BBMBImage']:
+    """
+    Load multiband cutout data for RGB visualization.
+
+    Attempts to load g, r, N708, and i-band cutouts from the specified
+    directory structure. If any required files are missing, returns None
+    to trigger fallback to grayscale visualization.
+
+    Parameters
+    ----------
+    img_name : str
+        Galaxy ID (e.g., 'M1234567890123456789')
+    catalog : pd.DataFrame
+        Catalog containing RA, DEC columns indexed by img_name
+    cutout_base_path : Path
+        Base directory containing 'hsc/' and 'merian/' subdirectories
+    logger : logging.Logger, optional
+        Logger instance for warnings
+
+    Returns
+    -------
+    bbmb : BBMBImage or None
+        Loaded BBMBImage object with reprojected and PSF-matched bands,
+        or None if any required cutouts are missing
+    """
+    from astropy import coordinates
+    from carpenter import conventions, pixels
+
+    # Generate object name from RA/DEC
+    objname = conventions.produce_merianobjectname(
+        *catalog.loc[img_name, ['RA', 'DEC']].values
+    )
+
+    # Check if all required cutouts exist
+    cutout_base_path = Path(cutout_base_path)
+    for band in ['g', 'r', 'N708', 'i']:
+        if band in ['N708', 'N540']:
+            cutout = cutout_base_path / 'merian' / f'{objname}_{band}_merim.fits'
+        else:
+            cutout = cutout_base_path / 'hsc' / f'{objname}_HSC-{band}.fits'
+
+        if not cutout.exists():
+            if logger:
+                logger.debug(f"Cutout not found for {img_name}: {cutout}")
+            return None
+
+    # All cutouts exist - load them
+    bbmb = pixels.BBMBImage()
+    coord = coordinates.SkyCoord(
+        catalog.loc[img_name, 'RA'],
+        catalog.loc[img_name, 'DEC'],
+        unit='deg'
+    )
+
+    try:
+        for band in ['g', 'r', 'N708', 'i']:
+            if band in ['N708', 'N540']:
+                cutout = cutout_base_path / 'merian' / f'{objname}_{band}_merim.fits'
+                psf = cutout_base_path / 'merian' / f'{objname}_{band}_merpsf.fits'
+            else:
+                cutout = cutout_base_path / 'hsc' / f'{objname}_HSC-{band}.fits'
+                psf = cutout_base_path / 'hsc' / f'{objname}_HSC-{band}_psf.fits'
+
+            bbmb.add_band(
+                band,
+                coord,
+                size=150,
+                image=str(cutout),
+                var=str(cutout),
+                image_ext=1,
+                var_ext=3,
+                psf=str(psf) if psf.exists() else None
+            )
+
+        # Reproject to common WCS and match PSFs
+        bbmb.reproject()
+        #bbmb.match_psfs(refband='N708')
+
+        return bbmb
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"Failed to load cutouts for {img_name}: {e}")
+        return None
+
+
+def get_sample_sizes(data: Dict, logger: logging.Logger) -> pd.DataFrame:
+    """
+    Get sample sizes at each stage of the selection process.
+
+    Tracks the number of objects through the various cuts applied during
+    sample selection, from the initial Merian DR1 FITS catalog to the final
+    analysis sample.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data() containing:
+        - 'full_catalog': Parquet catalog with rough cuts
+        - 'base_catalog': Good objects after quality cuts
+        - 'img_names': Processed objects with images
+        - 'catalog': Final sample after all cuts
+    logger : logging.Logger
+        Logger instance
+
+    Returns
+    -------
+    sample_sizes : pd.DataFrame
+        DataFrame with columns:
+        - 'stage': Description of selection stage
+        - 'count': Number of objects at that stage
+        - 'fraction': Fraction relative to full Merian DR1 catalog
+    """
+    logger.info("Computing sample sizes at each selection stage")
+
+    # Load the true full Merian DR1 catalog from FITS file
+    fits_path = Path('/Users/kadofong/work/projects/merian/local_data/base_catalogs/Merian_DR1_photoz_EAZY_v2.0.fits')
+    with fits.open(fits_path) as hdul:
+        n_dr1_full = hdul[1].header['NAXIS2']
+    logger.info(f"Loaded Merian DR1 FITS catalog: {n_dr1_full} objects")
+
+    # Extract sample sizes at each stage
+    full_catalog, masks = sample.load_sample(
+        '/Users/kadofong/work/projects/merian/local_data/base_catalogs/mdr1_n708maglt26_and_pzgteq0p1.parquet'
+    )
+    base_catalog = full_catalog.loc[masks['is_good'][0]]
+        
+    n_rough_cut = len(full_catalog)
+    n_base = len(base_catalog)
+    n_processed = len(data['img_names'])
+    n_final = len(data['catalog'])
+
+    # Create DataFrame
+    sample_sizes = pd.DataFrame({
+        'stage': [
+            'Merian DR1 (full catalog)',
+            'Merian DR1 (rough cut)',
+            'Merian DR1 (good objects)',
+            'Processed objects (with images)',
+            'Final sample (after cuts)'
+        ],
+        'count': [n_dr1_full, n_rough_cut, n_base, n_processed, n_final],
+        'fraction': [
+            1.0,
+            n_rough_cut / n_dr1_full,
+            n_base / n_dr1_full,
+            n_processed / n_dr1_full,
+            n_final / n_dr1_full
+        ]
+    })
+
+    logger.info(f"\nSample sizes:")
+    for _, row in sample_sizes.iterrows():
+        logger.info(f"  {row['stage']}: {row['count']} ({row['fraction']:.1%})")
+
+    return sample_sizes
+
+
+def extract_dsfs(data: Dict, logger: logging.Logger) -> pd.Series:
+    """
+    Extract distance from star-forming sequence (dSFS) for all galaxies.
+
+    Computes the offset from the star-forming sequence in units of dex,
+    defined as the difference between the observed SFR and the expected
+    SFR from the star-forming sequence relation at the galaxy's stellar mass.
+
+    The star-forming sequence relation used is:
+        log(SFR_SFS) = alpha * (logM* - 8.5) + norm
+    where:
+        alpha = -0.13 * 0.08 + 0.8
+        norm = 1.24 * 0.08 - 1.47
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data() containing:
+        - 'catalog': DataFrame with 'L_Ha' and 'logmass_adjusted' columns
+    logger : logging.Logger
+        Logger instance
+
+    Returns
+    -------
+    dsfs : pd.Series
+        Distance from star-forming sequence in dex for each galaxy,
+        indexed by galaxy ID. Positive values indicate galaxies above
+        the SFS (higher SFR than expected), negative values indicate
+        galaxies below the SFS (lower SFR than expected).
+    """
+    logger.info("Computing distance from star-forming sequence (dSFS)")
+
+    catalog = data['catalog']
+
+    # Compute dSFS: observed SFR - SFS(M*)
+    dsfs = np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])
+
+    logger.info(f"Computed dSFS for {len(dsfs)} galaxies")
+    logger.info(f"dSFS range: [{dsfs.min():.2f}, {dsfs.max():.2f}] dex")
+    logger.info(f"dSFS median: {dsfs.median():.2f} dex")
+
+    return dsfs
 
 
 def load_data(config: dict, logger: logging.Logger,
@@ -313,6 +739,10 @@ def load_data(config: dict, logger: logging.Logger,
     )
     base_catalog = full_catalog.loc[masks['is_good'][0]]
 
+    # Store catalogs for sample size tracking
+    data['full_catalog'] = full_catalog
+    data['base_catalog'] = base_catalog
+
     # Load adjusted masses
     print(mass_cachefile)
     assert os.path.exists(mass_cachefile)
@@ -451,9 +881,173 @@ def load_data_multirun (
     principal_run['std_prob_labels'] = s_prob_labels
     
     principal_run['possible_merger'] = (principal_run['prob_labels_iter'][:,2]+principal_run['prob_labels_iter'][:,3])>principal_run['prob_labels_iter'][:,1]
-    
+
     return principal_run
-    
+
+
+def _plot_model_results(
+    sample_d: Dict,
+    mass_keys: np.ndarray,
+    axarr: np.ndarray,
+    show_legend: bool = False,
+    obs_cut: bool = True
+) -> None:
+    """
+    Plot merger fraction vs starburst signal for a toy model.
+
+    Creates two panels:
+    - Left: Absolute merger fraction vs S
+    - Right: Normalized merger fraction vs S (R_int)
+
+    Parameters
+    ----------
+    sample_d : dict
+        Sample dictionary from generate_toymodel_data
+    mass_keys : np.ndarray
+        Mass bins used in sampling
+    axarr : np.ndarray
+        Array of 2 axes
+    show_legend : bool
+        Whether to show colorbar legend
+    obs_cut : bool
+        Whether to apply observability cut
+    """
+    for lm in mass_keys:
+        logmstar_sample, s_values, xi_values, observed_as_merger = sample_d[lm]
+
+        if obs_cut:
+            smask = s_values < (-5./8.*lm + 8.)
+        else:
+            smask = np.isfinite(s_values)
+
+        bin_edges, f_merger, f_merger_ci = sampling.classfraction(
+            s_values[smask][observed_as_merger[smask]],
+            s_values[smask],
+            bins=np.linspace(0., 3., 15)
+        )
+
+        ek.outlined_plot(
+            sampling.midpts(bin_edges),
+            f_merger,
+            ax=axarr[0],
+            color=cmap_dsfs((lm-7.)/3.),
+            lw=3,
+            label=lm
+        )
+        ek.outlined_plot(
+            sampling.midpts(bin_edges),
+            f_merger/f_merger[0],
+            ax=axarr[1],
+            color=cmap_dsfs((lm-7.)/3.),
+            lw=3,
+            label=lm
+        )
+
+    if show_legend:
+        ek.colorbar_inset(
+            cmap_dsfs,
+            7.,
+            10.,
+            x=0.1,
+            y=0.9,
+            height=0.05,
+            width=0.5,
+            label=ek.common_labels['logmstar'],
+            orientation='horizontal',
+            ax=axarr[1]
+        )
+
+    lkwargs = {'ls':':', 'color':'lightgrey', 'zorder':-1}
+    axarr[1].axhline(1., **lkwargs)
+    axarr[1].axvline(0., **lkwargs)
+    for ax in axarr:
+        ax.set_xlabel(r'$ \mathcal{S} = \frac{\log_{10}[{\rm SFR}/{\rm SFS(M_\bigstar)}]}{\sigma_{\rm SFS}}$', fontsize=20)
+    axarr[0].set_ylabel(r'$\langle \rm Pr[interaction] \rangle$')
+    axarr[1].set_ylabel(r'$\mathcal{R}_{\rm int}(\mathcal{S})$')
+
+
+def _plot_model_setup(tm: ToyModel, axarr: np.ndarray) -> None:
+    """
+    Plot PDF distributions for internal and external starburst signals.
+
+    Shows probability distributions Pr[S|M*,xi] for:
+    - Internal variations at different masses (blue curves)
+    - External merger-driven boost at different mass ratios (red curves)
+
+    Parameters
+    ----------
+    tm : ToyModel
+        Toy model instance
+    axarr : np.ndarray
+        Array of axes (only first axis used)
+    """
+    lkwargs = {'lw': 3}
+    cc = ec.ColorBase(colorlists.slides['red']).modulate(0.2, -0.6)
+    bc = ec.ColorBase(colorlists.slides['blue']).modulate(0.2, -0.6)
+
+    s_grid = np.linspace(0., 3., 100)
+
+    # Plot internal PDFs for different masses
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_internal(s_grid, 10.),
+        label=r'Pr_{\rm int}[$\mathcal{S}|10^{10.},\xi$]',
+        color=bc.modulate(-0.2, 0.2).base,
+        **lkwargs
+    )
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_internal(s_grid, 9.5),
+        label=r'Pr_{\rm int}[$\mathcal{S}|10^{9.5},\xi$]',
+        color=bc.modulate(-0.1, 0.1).base,
+        **lkwargs
+    )
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_internal(s_grid, 8.5),
+        label=r'Pr_{\rm int}[$\mathcal{S}|10^{8.5},\xi$]',
+        ls='--',
+        color=bc.modulate(0.).base,
+        **lkwargs
+    )
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_internal(s_grid, 8.),
+        label=r'Pr_{\rm int}[$\mathcal{S}|10^{8.},\xi$]',
+        color=bc.modulate(0.1).base,
+        ls=':',
+        **lkwargs
+    )
+
+    # Plot external PDFs for different mass ratios
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_external(s_grid, 9.5, 1.),
+        label=r'$\xi=1$',
+        color=cc.modulate(0.2).base,
+        ls='-',
+        **lkwargs
+    )
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_external(s_grid, 9.5, 0.5),
+        label=r'$\xi=0.5$',
+        color=cc.modulate(-0.05, 0.1).base,
+        ls='-',
+        **lkwargs
+    )
+    axarr[0].plot(
+        s_grid,
+        tm.pdf_s_external(s_grid, 9.5, 0.1),
+        label=r'$\xi=0.1$',
+        color=cc.modulate(-0.1, 0.2).base,
+        ls='-',
+        **lkwargs
+    )
+
+    axarr[0].legend()
+    axarr[0].set_ylabel(r'Pr[$\mathcal{S}|M_\bigstar,\xi$]')
+
 
 def make_figure_label_distribution(
     data: Dict,
@@ -641,6 +1235,7 @@ Pr[frag] = {prob_labels_iter[gix, 4]:.2f}""",
         logger.info(f"Saved: {output_file}")
 
 
+
 def make_figure_merger_candidates(
     data: Dict,
     output_dir: Path,
@@ -739,6 +1334,567 @@ Pr[frag] = {prob_labels_iter[gix, 4]:.2f}""",
         logger.info(f"Saved: {output_file}")
 
 
+def make_figure_ptf_chart(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger,
+    logmstar_min = 8.6,
+    logmstar_max = 9.2,
+) -> None:
+    """
+    Figure: P[tf] chart showing examples across probability bins.
+
+    Shows galaxies at different levels of p[tf] (tidal feature probability),
+    with bins from np.linspace(0., 1., 5), displaying i-band, i-band (LSB),
+    and high-frequency images for each bin.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    """
+    import cmasher
+    cmap = cmasher.arctic
+    logger.info("Generating P[tf] chart")
+
+    img_names = data['img_names']
+    prob_labels_iter = data['prob_labels_iter']
+    n_labels_iter = data['n_labels_iter']
+    fragmented = data['fragmented']
+    data_path = data['data_path']
+
+    # Calculate p[tf] = p[ambig] + p[merger]
+    ptf = prob_labels_iter[:, 2] + prob_labels_iter[:, 3]
+
+    # For each bin, find one example galaxy (excluding fragmented)
+    example_indices = []
+    bin_labels = []
+    
+    dc = data['catalog'].reindex(img_names)
+    mass_mask = (dc['logmass_adjusted']>logmstar_min)&(dc['logmass_adjusted']<logmstar_max)
+
+    # Define bins for p[tf]
+    ptf_bins = np.linspace(0., min(1.,max(ptf[mass_mask])) , 6)
+    n_bins = len(ptf_bins) - 1
+    
+    # Test it
+    eclipse = cmasher.eclipse
+    target_hex = '#0c3740'
+
+    #optimal_shift, min_dist = ec.find_optimal_hue_shift(eclipse, target_hex, cmap_max=0.2)
+    custom_cmap = cmasher.eclipse #ec.shift_colormap_hue_hcl(eclipse, optimal_shift)
+    custom_arctic = ec.shift_colormap_hue_hcl(
+        cmasher.arctic,
+        ec.find_optimal_hue_shift(cmasher.arctic, '#00B0D3')[0]
+    )
+    
+    for i in range(n_bins):
+        bin_low = ptf_bins[i]
+        bin_high = ptf_bins[i + 1]
+
+        # Find galaxies in this bin (excluding fragmented)
+        in_bin = (ptf >= bin_low) & (ptf < bin_high) & ~fragmented & mass_mask
+        candidates = np.arange(len(img_names))[in_bin]
+
+        if len(candidates) > 0:
+            # Pick one example from this bin
+            gix = np.random.choice(candidates)
+            example_indices.append(gix)
+            bin_labels.append(f"[{bin_low:.2f}, {bin_high:.2f})")
+        else:
+            logger.warning(f"No galaxies found in p[tf] bin [{bin_low:.2f}, {bin_high:.2f})")
+
+    if len(example_indices) == 0:
+        logger.warning("No examples found for any p[tf] bin")
+        return
+
+    n_examples = len(example_indices)
+    fig, axarr = plt.subplots(2, n_examples, figsize=(3.4 * n_examples, 10*2./3.))
+
+    # Handle case where there's only one example
+    if n_examples == 1:
+        axarr = axarr.reshape(-1, 1)
+
+    for idx, gix in enumerate(example_indices):
+        img_name = img_names[gix]
+        print(img_name)
+        image = load_image_by_name(img_name, data_path)
+
+        # i-band
+        #ek.imshow(image[1], ax=axarr[0, idx], q=0.025, cmap='Greys')
+
+        # i-band log scale
+        axarr[0, idx].imshow(
+            image[1],
+            origin='lower',
+            cmap=cmasher.eclipse,
+            norm=colors.SymLogNorm(linthresh=0.1)
+        )
+        axarr[0,idx].imshow(
+            image[3],
+            origin='lower',
+            cmap = ec.ColorBase('grey').sequential_cmap(fade=0)
+        )
+
+        # High-frequency
+        axarr[1, idx].imshow(
+            image[2], 
+            origin='lower',
+            cmap=custom_arctic,
+            vmin=np.nanquantile(np.where(image[3]==0,image[2],np.nan), 0.01),
+            vmax=np.nanquantile(np.where(image[3]==0,image[2],np.nan), 0.99)
+        )
+        axarr[1,idx].imshow(
+            (image[3]>0).astype(int),
+            origin='lower',
+            cmap = ec.ColorBase(custom_arctic(0.5)).modulate(0.2,-0.3).sequential_cmap(fade=0),
+            alpha=0.7
+        )        
+
+        # Add statistics with p[tf] bin label
+        ek.text(
+            0.025, 0.025,
+            f"""Pr[UD] = {prob_labels_iter[gix, 1]:.2f}
+Pr[TF] = {ptf[gix]:.2f}
+logMstar = {dc.loc[img_names[gix], 'logmass_adjusted']:.2f}""",
+            ax=axarr[0, idx],
+            fontsize=15,
+            bordercolor='w',
+            color='k',
+            borderwidth=3
+        )
+
+    for ax in axarr.flatten():
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    #ek.text(0.05, 0.95, 'HSC i-band', ax=axarr[0, 0], fontsize=12,
+    #        bordercolor='k', color='w', borderwidth=6)
+    ek.text(0.05, 0.95, 'HSC i-band (LSB)', ax=axarr[0, 0], fontsize=12,
+            bordercolor='k', color='w', borderwidth=6)
+    ek.text(0.05, 0.95, 'Starlet HF', ax=axarr[1, 0], fontsize=12,
+            bordercolor='k', color='w', borderwidth=6)
+
+    plt.tight_layout()
+    if output_dir is not None:
+        output_file = output_dir / f'fig_ptf_chart_{logmstar_max*1e2:.0f}.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        logger.info(f"Saved: {output_file}")
+
+
+def make_figure_gallery_grid_dsfs_ptf(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger,
+    n_rows: int = 5,
+    n_cols: int = 5,
+) -> None:
+    """
+    Figure: 10x10 gallery grid of galaxies organized by dSFS and P[TF].
+
+    Creates a large gallery grid showing representative galaxies across the
+    parameter space of distance from star-forming sequence (dSFS) and
+    tidal feature probability P[TF].
+
+    Grid organization:
+    - Rows (top to bottom): Increasing dSFS
+    - Columns (left to right): Increasing P[TF]
+
+    Each cell shows the i-band LSB visualization (top panel style from
+    make_figure_ptf_chart) for one representative galaxy.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    n_rows : int, optional
+        Number of rows in grid (default 10, for dSFS bins)
+    n_cols : int, optional
+        Number of columns in grid (default 10, for P[TF] bins)
+    """
+    import cmasher
+
+    logger.info(f"Generating {n_rows}x{n_cols} gallery grid (dSFS vs P[TF])")
+
+    img_names = data['img_names']
+    prob_labels_iter = data['prob_labels_iter']
+    fragmented = data['fragmented']
+    data_path = data['data_path']
+    catalog = data['catalog'].reindex(img_names)
+
+    # Calculate P[TF] = P[ambig] + P[merger]
+    ptf = prob_labels_iter[:, 2] + prob_labels_iter[:, 3]
+
+    # Calculate dSFS: observed SFR - SFS(M*)
+    dsfs = np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])
+
+    # Exclude fragmented galaxies and those with high "fragmented" probability
+    valid_mask = ~fragmented & (prob_labels_iter[:, 4] <= 0.2)
+    valid_mask &= catalog.loc[img_names]['logmass_adjusted'] > 9.1
+
+    logger.info(f"Valid galaxies for grid: {valid_mask.sum()} / {len(img_names)}")
+    logger.info(f"P[TF] range: [{ptf[valid_mask].min():.3f}, {ptf[valid_mask].max():.3f}]")
+    logger.info(f"dSFS range: [{dsfs[valid_mask].min():.3f}, {dsfs[valid_mask].max():.3f}] dex")
+
+    # Create bins
+    eps = 0.01
+    ptf_bins = np.linspace( *np.nanquantile(ptf[valid_mask], [0.01, 1-eps]), n_cols + 1)
+    dsfs_bins = np.linspace(*np.nanquantile(dsfs[valid_mask], [0.01, 1-eps]), n_rows + 1)
+    #ptf = np.where(ptf>np.nanquantile(ptf, 0.99), np.nanquantile(ptf, 0.99), ptf)
+
+    # Setup colormap (matching make_figure_ptf_chart)
+    custom_arctic = ec.shift_colormap_hue_hcl(
+        cmasher.arctic,
+        ec.find_optimal_hue_shift(cmasher.arctic, '#00B0D3')[0]
+    )
+
+    # Create figure with 10x10 grid
+    fig, axarr = plt.subplots(n_rows, n_cols, figsize=(10, 10))
+
+    # Populate grid
+    shown_ids = []
+    for i_row in range(n_rows):
+        dsfs_low = dsfs_bins[i_row]
+        dsfs_high = dsfs_bins[i_row + 1]
+
+        for i_col in range(n_cols):
+            ptf_low = ptf_bins[i_col]
+            if (i_col + 1) == n_cols:
+                ptf_high = np.inf
+            else:
+                ptf_high = ptf_bins[i_col+1]
+
+            # Find galaxies in this bin
+            in_bin = (
+                valid_mask &
+                (dsfs >= dsfs_low) & (dsfs < dsfs_high) &
+                (ptf >= ptf_low) & (ptf < ptf_high)
+            )
+            candidates = np.arange(len(img_names))[in_bin]
+
+            ax = axarr[i_row, i_col]
+
+            if len(candidates) > 0:
+                loop = True
+                nidx = 0
+                while loop:
+                    # Pick one representative galaxy from this bin
+                    gix = np.random.choice(candidates)
+                    img_name = img_names[gix]
+                    image = load_image_by_name(img_name, data_path)
+                    if (image[3].sum() /image[3].size) > 0.5:
+                        nidx += 1
+                        if nidx > 10:
+                            loop = False
+                    else:
+                        # i-band LSB visualization (matching top panel of make_figure_ptf_chart)
+                        ax.imshow(
+                            image[1],
+                            origin='lower',
+                            cmap=cmasher.eclipse,
+                            #ax=ax,
+                            norm=colors.SymLogNorm(linthresh=0.1)
+                        )
+                        ax.imshow(
+                            image[3],
+                            origin='lower',
+                            cmap=ec.ColorBase('grey').sequential_cmap(fade=0)
+                        )
+
+                        shown_ids.append(img_name)
+                        loop=False
+            else:
+                # Empty bin - show blank
+                ax.set_facecolor('black')
+
+            # Remove ticks
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+    # Add row labels (dSFS) on the left
+    for i_row in range(n_rows):
+        dsfs_low = dsfs_bins[i_row]
+        dsfs_high = dsfs_bins[i_row + 1]
+        dsfs_mid = (dsfs_low + dsfs_high) / 2
+
+        axarr[i_row, 0].text(
+            -0.02, 0.5, f'{dsfs_mid:.2f}',
+            transform=axarr[i_row, 0].transAxes,
+            fontsize=8,
+            va='center',
+            ha='right'
+        )
+
+    # Add column labels (P[TF]) on the top
+    for i_col in range(n_cols):
+        ptf_low = ptf_bins[i_col]
+        ptf_high = ptf_bins[i_col + 1]
+        ptf_mid = (ptf_low + ptf_high) / 2
+
+        axarr[0, i_col].text(
+            0.5, 1.02, f'{ptf_mid:.2f}',
+            transform=axarr[0, i_col].transAxes,
+            fontsize=8,
+            va='bottom',
+            ha='center'
+        )
+
+    # Add axis titles
+    fig.text(0.5, 0.98, 'P[TF] $\\rightarrow$',
+             ha='center', va='top', fontsize=12, weight='bold')
+    fig.text(0.02, 0.5, 'dSFS $\\rightarrow$',
+             ha='left', va='center', fontsize=12, weight='bold', rotation=90)
+
+    plt.subplots_adjust(wspace=0.02, hspace=0.02, left=0.05, right=0.98, top=0.96, bottom=0.02)
+
+    if output_dir is not None:
+        output_file = output_dir / 'fig_gallery_grid_dsfs_ptf.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved: {output_file}")
+
+
+def make_figure_merger_gallery(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger,
+    tf_thresh: float = 0.5,
+    n_rows: int = 10,
+    n_cols: int = 5,
+    random_seed: Optional[int] = None,
+    use_rgb: bool = True,
+    cutout_base_path: Optional[Path] = None,
+    lupton_Q: float = 8.0,
+    lupton_stretch: float = .5,
+    logmstar_max: float = 9.5
+) -> None:
+    """
+    Figure: Gallery of merger candidates above a P[TF] threshold.
+
+    Creates a simple gallery grid showing randomly sampled galaxies
+    with tidal feature probability above a specified threshold.
+    No binning by mass or dSFS - just a random sample of high-P[TF] galaxies.
+
+    By default, displays r-N708-i false color RGB images. Falls back to
+    i-band grayscale visualization if RGB cutouts are unavailable.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    tf_thresh : float, optional
+        Minimum P[TF] threshold for inclusion (default 0.5)
+    n_rows : int, optional
+        Number of rows in grid (default 10)
+    n_cols : int, optional
+        Number of columns in grid (default 5)
+    random_seed : int, optional
+        Random seed for reproducible galaxy selection (default None)
+    use_rgb : bool, optional
+        If True, attempt to load RGB cutouts; fallback to grayscale if missing (default True)
+    cutout_base_path : Path, optional
+        Base directory containing 'hsc/' and 'merian/' cutout subdirectories.
+        If None, uses './figure_generation/figure_data/' (default None)
+    lupton_Q : float, optional
+        Lupton RGB Q parameter for scaling (default 3.0)
+    lupton_stretch : float, optional
+        Lupton RGB stretch parameter (default 2.0)
+    """
+    import cmasher
+    from astropy.visualization import make_lupton_rgb
+
+    logger.info(f"Generating merger gallery for P[TF] > {tf_thresh}")
+
+    img_names = data['img_names']
+    prob_labels_iter = data['prob_labels_iter']
+    std_prob_labels_iter = data['std_prob_labels']
+    fragmented = data['fragmented']
+    data_path = data['data_path']
+    catalog = data['catalog']
+
+    # Set default cutout path if not provided
+    if cutout_base_path is None:
+        cutout_base_path = Path(__file__).parent / 'figure_data'
+
+    # Calculate P[TF] = P[ambig] + P[merger]
+    ptf = prob_labels_iter[:, 2] + prob_labels_iter[:, 3]
+    u_ptf = np.sqrt(std_prob_labels_iter[:, 2]**2 + std_prob_labels_iter[:, 3]**2)
+
+    # Select galaxies above threshold (excluding fragmented)
+    valid_mask = (
+        (ptf > tf_thresh) &
+        ~fragmented &
+        (prob_labels_iter[:, 4] <= 0.2) &
+        (catalog.reindex((img_names))['logmass_adjusted'] < logmstar_max)
+    )
+
+    candidates = np.where(valid_mask)[0]
+    n_candidates = len(candidates)
+
+    logger.info(f"Found {n_candidates} galaxies with P[TF] > {tf_thresh}")
+
+    if n_candidates == 0:
+        logger.warning(f"No galaxies found with P[TF] > {tf_thresh}")
+        return
+
+    # Determine how many galaxies to show
+    n_to_show = min(n_rows * n_cols, n_candidates)
+
+    # Randomly sample galaxies
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    selected_indices = np.random.choice(candidates, size=n_to_show, replace=False)
+
+    # Sort by P[TF] (descending) for nicer visual organization
+    selected_indices = selected_indices[np.argsort(ptf[selected_indices])[::-1]]
+    
+    logger.info(f"Displaying {n_to_show} galaxies in {n_rows}x{n_cols} grid")
+
+    # Setup colormap (matching make_figure_ptf_chart)
+    custom_arctic = ec.shift_colormap_hue_hcl(
+        cmasher.arctic,
+        ec.find_optimal_hue_shift(cmasher.arctic, '#00B0D3')[0]
+    )
+
+    # Create figure
+    fig, axarr = plt.subplots(n_rows, n_cols*2,
+                              figsize=(n_cols*2, n_rows),
+                              squeeze=False)
+    shown_ids = []
+    # Populate grid
+    for idx in range(n_rows * n_cols):
+        i_row = idx // n_cols
+        i_col = (idx % n_cols)*2
+        ax = axarr[i_row, i_col]
+        bx = axarr[i_row, i_col+1]
+
+        if idx < len(selected_indices):
+            gix = selected_indices[idx]
+            img_name = img_names[gix]
+            shown_ids.append(img_name)
+
+            # Try to load RGB cutout first if use_rgb is True
+            bbmb = None
+            if use_rgb:
+                bbmb = load_bbmb_cutout(img_name, catalog.reindex(img_names), cutout_base_path, logger)
+
+            if bbmb is not None:
+                # Create and display RGB image
+                rgb = make_lupton_rgb(
+                    bbmb.image['i'],
+                    bbmb.image['N708'],
+                    bbmb.image['g'],
+                    Q=lupton_Q,
+                    stretch=lupton_stretch
+                )
+                ax.imshow(rgb, origin='lower')
+            else:
+                # Fallback: i-band LSB grayscale visualization
+                image = load_image_by_name(img_name, data_path)
+                ax.imshow(
+                    image[1],
+                    origin='lower',
+                    cmap=cmasher.eclipse,
+                    norm=colors.SymLogNorm(linthresh=0.1)
+                )
+                ax.imshow(
+                    image[3],
+                    origin='lower',
+                    cmap=ec.ColorBase('grey').sequential_cmap(fade=0)
+                )
+
+            # Load HF image for second column
+            image = load_image_by_name(img_name, data_path)
+            bx.imshow(
+                image[2], 
+                origin='lower',
+                cmap=custom_arctic,
+                vmin=np.nanquantile(np.where(image[3]==0,image[2],np.nan), 0.05),
+                vmax=np.nanquantile(np.where(image[3]==0,image[2],np.nan), 0.95)
+            )  
+            bx.imshow(
+                (image[3]>0).astype(int),
+                origin='lower',
+                cmap = ec.ColorBase(custom_arctic(0.5)).modulate(0.2,-0.3).sequential_cmap(fade=0),
+                alpha=0.7
+            )        
+                      
+
+            # Add P[TF] label in corner
+            # Disable clipping on the axes to allow text to overflow
+            ax.set_clip_on(False)
+            ek.text(
+                0.025,
+                0.975,
+                'abcdefghijklmnopqrztuvwxyz'[idx],
+                ax=ax,
+                color='k',
+                bordercolor='w',
+                fontsize=9
+            )
+
+            from matplotlib import patheffects
+            txt = bx.text(
+                1.05, 0.025,
+                rf"Pr[TF]={ptf[gix]:.2f}$\pm${u_ptf[gix]:.2f}",
+                transform=ax.transAxes,
+                fontsize=9,
+                color='k',
+                ha='center',
+                va='bottom',
+                zorder=100,  # High z-order to draw on top of adjacent subplots
+                clip_on=False
+            )
+            txt.set_path_effects([patheffects.withStroke(linewidth=2, foreground='w')])
+            if output_dir is None:
+                txt = bx.text(
+                    1.05, 0.8,
+                    rf"{catalog.loc[img_name, 'logmass_adjusted']:.2f}",
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    color='k',
+                    ha='center',
+                    va='bottom',
+                    zorder=100,  # High z-order to draw on top of adjacent subplots
+                    clip_on=False
+                )            
+            # Add border effect
+            txt.set_path_effects([patheffects.withStroke(linewidth=2, foreground='w')])
+        else:
+            # Empty cell (if we have fewer galaxies than grid cells)
+            ax.set_facecolor('black')
+
+        # Remove ticks
+        ax.set_xticks([])
+        ax.set_yticks([])
+        bx.set_xticks([])
+        bx.set_yticks([])        
+
+
+    plt.subplots_adjust(wspace=0.02, hspace=0.02, left=0.02, right=0.98, top=0.98, bottom=0.02)
+
+    if output_dir is not None:
+        output_file = output_dir / f'fig_merger_gallery_ptf{tf_thresh:.2f}.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved: {output_file}")
+    return shown_ids
+
 def make_figure_ha_sfs_merger_fraction(
     data: Dict,
     output_dir: Path,
@@ -763,9 +1919,9 @@ def make_figure_ha_sfs_merger_fraction(
 
     catalog = data['catalog']
 
-    fig, axarr = plt.subplots(1, 2, figsize=(10, 4))
+    fig, axarr = plt.subplots(1, 2, figsize=(10, 4), width_ratios=(1.2,1))
 
-    bins = [np.logspace(7.75, 10.5, 15), np.logspace(39, 41.9, 20)]
+    bins = [np.logspace(7.75, 10.5, 20), np.logspace(39, 41.9, 25)]
     
     cmap = ec.colormap_from_list([
         ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,0.3).base, 
@@ -796,29 +1952,48 @@ def make_figure_ha_sfs_merger_fraction(
         xscale='log',
         bins=bins,
         ax=axarr[1],
+        zorder=0
     )
 
-    print(np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.975))
-    probable_merger = (catalog['p_ambig'] + catalog['p_merger']) > np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.975)
-    axarr[1].scatter(
+    thresh = np.nanquantile((catalog['p_ambig'] + catalog['p_merger']), 0.9)
+    print(rf'Pr[TF]_{{90}} is {thresh}') 
+    probable_merger = (catalog['p_ambig'] + catalog['p_merger']) > thresh
+    ek.density_contour_scatter(
         10.**catalog.loc[probable_merger, 'logmass_adjusted'],
         catalog.loc[probable_merger, 'L_Ha'],
-        fc=cmap(.95),
-        ec=cmap(0.8),
-        s=4**2,
+        #fc=cmap(.95),
+        #ec=cmap(0.8),
+        ax=axarr[1],
+        cmap=cmap,
+        quantiles= np.linspace(0.,0.8, 10),
+        yscale='log',
+        xscale='log',
+        scatter_s=4,
         #label=r'Pr[interaction] > Pr[undisturbed]'
     )
+    ek.text(
+        0.975,
+        0.025,
+        'All galaxies',
+        ax=axarr[1],
+        color='grey'
+    )
+    ek.text(
+        0.975,
+        0.125,
+        r'Pr[TF] > Pr[TF]$_{90}$',
+        ax=axarr[1],
+        color=cmap(0.1)
+    )    
     #axarr[1].legend(loc='lower right', fontsize=10)
 
     # Plot star-forming sequence
     ms = im._coordinates.data[0, :, 0]
-    alpha = -0.13 * 0.08 + 0.8
-    norm = 1.24 * 0.08 - 1.47
-    sfs = 10.**(alpha * (np.log10(ms) - 8.5) + norm)
-    ha_sfs = calibrations.SFR2LHa(sfs)
+    sfr_sfs = 10.**sfs(np.log10(ms))
+    ha_sfs = calibrations.SFR2LHa(sfr_sfs)
 
-    plt.colorbar(imx[0][-1], ax=axarr[1], label=r'$\langle N_{\rm merger} \rangle$')
-    plt.colorbar(im, ax=axarr[0], label=r'$\langle {\rm Pr[interaction]}\rangle$')
+    #plt.colorbar(imx[0][-1], ax=axarr[1], label=r'$\langle N_{\rm gal} \rangle$')
+    plt.colorbar(im, ax=axarr[0], label=r'$\langle {\rm Pr[TF]}\rangle$')
 
     for ax in axarr:
         ek.outlined_plot(
@@ -879,11 +2054,8 @@ def make_figure_merger_fraction_vs_mass(
 
     catalog = data['catalog']
 
-    # Compute SFS relation
-    alpha = -0.13 * 0.08 + 0.8
-    norm = 1.24 * 0.08 - 1.47
+    # Compute SFS parameters
     sfs_std = 0.22 * 0.08 + 0.38
-    sfs = lambda logmstar: alpha * (logmstar - 8.5) + norm
 
     # Compute distance from SFS
     dsfs = np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])
@@ -945,7 +2117,7 @@ def make_figure_merger_prob_vs_dsfs(
     data: Dict,
     output_dir: Path,
     logger: logging.Logger
-) -> None:
+) -> Dict:
     """
     Figure 6: Merger probability vs distance from star-forming sequence, by mass bin.
 
@@ -960,20 +2132,35 @@ def make_figure_merger_prob_vs_dsfs(
         Output directory for figures
     logger : logging.Logger
         Logger instance
+
+    Returns
+    -------
+    dict
+        Dictionary containing curve data with structure:
+        {
+            'mass_bins': {
+                (logmass_min, logmass_max): {
+                    'unnormalized': [x, y, ylow, yhigh],
+                    'normalized': [x, y, ylow, yhigh]
+                },
+                ...
+            },
+            'overall_trend': [x, y, ylow, yhigh]
+        }
     """
     logger.info("Generating Figure 6: Merger probability vs dSFS by mass")
 
     catalog = data['catalog']
 
-    # Compute SFS relation
-    alpha = -0.13 * 0.08 + 0.8
-    norm = 1.24 * 0.08 - 1.47
+    # Compute SFS parameters
     sfs_std = 0.22 * 0.08 + 0.38
-    sfs = lambda logmstar: alpha * (logmstar - 8.5) + norm
-    
+
     pmerger = pd.Series(data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3], index=data['img_names'])
     pmerger = pmerger.reindex(data['catalog'].index)
     
+    mask = data['catalog'].reindex(data['img_names'])['logmass_adjusted']<8.
+    floor = np.mean(data['mean_prob_labels'][mask,2])    
+
     u_pmerger = pd.Series((data['std_prob_labels'][:,2]**2 + data['std_prob_labels'][:,3]**2)**0.5, index=data['img_names'])
     u_pmerger = u_pmerger.reindex(data['catalog'].index)
 
@@ -988,11 +2175,15 @@ def make_figure_merger_prob_vs_dsfs(
         np.linspace(8., 11., 12),
         erronmetric=True
     )
+    
     pmerger_baseline_by_mass = lambda logmstar: np.interp(
         logmstar,
         out_baseline[0].flatten(),
         out_baseline[1][:, 0, 2].flatten()
     )
+
+    # Initialize dictionary to store curve data
+    curve_data = {'mass_bins': {}}
 
     fig, axarr = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -1004,9 +2195,7 @@ def make_figure_merger_prob_vs_dsfs(
 
     axarr[0].set_xlim(-0.75, 3)
     axarr[0].set_ylim(0., 0.45)
-    
-    mask = data['catalog'].reindex(data['img_names'])['logmass_adjusted']<8.
-    floor = np.mean(data['mean_prob_labels'][mask,2])
+
     
     for gidx, gid in enumerate(groupids):
         selected = catalog.loc[groups == gid]
@@ -1014,10 +2203,11 @@ def make_figure_merger_prob_vs_dsfs(
         for idx, is_normalized in enumerate([False, True]):
 
             ms_at_mass = sfs(selected['logmass_adjusted'])
-            dsfs = np.log10(calibrations.LHa2SFR(selected['L_Ha'])) - ms_at_mass
+            dsfs = np.log10(calibrations.LHa2SFR(selected['L_Ha'])) - ms_at_mass            
             assns, loglhabins = sampling.bin_by_count(dsfs, 20, 0.25)
+            
             xs = sampling.midpts(loglhabins) / sfs_std
-
+            
             if is_normalized:
                 factor = 1. / (pmerger_baseline_by_mass(selected['logmass_adjusted'])-floor)
             else:
@@ -1052,8 +2242,20 @@ def make_figure_merger_prob_vs_dsfs(
                 alpha=0.3,
                 color=cmap(gidx / len(groupids))
             )
-            
-            
+
+            # Store curve data
+            mass_key = (logmstar_bins[gid-1], logmstar_bins[gid])
+            if mass_key not in curve_data['mass_bins']:
+                curve_data['mass_bins'][mass_key] = {}
+
+            data_key = 'normalized' if is_normalized else 'unnormalized'
+            curve_data['mass_bins'][mass_key][data_key] = [
+                xs,
+                ys[:, 0, 2]/nrml,  # mean
+                ys[:, 0, 1]/nrml,  # lower bound
+                ys[:, 0, 3]/nrml   # upper bound
+            ]
+
             if not is_normalized:
                 if gid < 2:
                     offset = 2
@@ -1122,7 +2324,15 @@ def make_figure_merger_prob_vs_dsfs(
         ls='--',
         lw=2
     )
-    
+
+    # Store overall trend data
+    curve_data['overall_trend'] = [
+        out[0],                 # x
+        out[1][:, 0, 2]/nrml,   # y (median)
+        out[1][:, 0, 1]/nrml,   # ylow (lower bound)
+        out[1][:, 0, 3]/nrml    # yhigh (upper bound)
+    ]
+
     textcolor=ec.ColorBase(cmap(0.5)).modulate(-0.2).base
     ek.arrow(
         -0.5,
@@ -1182,6 +2392,8 @@ def make_figure_merger_prob_vs_dsfs(
         plt.close()
 
         logger.info(f"Saved: {output_file}")
+
+    return curve_data
 
 
 def make_figure_hamorph_distributions(
@@ -2220,13 +3432,15 @@ def make_figure_merger_prob_vs_environment(
         logger.warning("Satellite data not available, skipping")
         return
 
-    # Compute SFS relation
-    alpha = -0.13 * 0.08 + 0.8
-    norm = 1.24 * 0.08 - 1.47
+    # Compute SFS parameters
     sfs_std = 0.22 * 0.08 + 0.38
-    sfs = lambda logmstar: alpha * (logmstar - 8.5) + norm
 
-    pmerger = catalog['p_merger'] + catalog['p_ambig']
+    ptf = pd.DataFrame(
+        data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3],
+        index=data['img_names'],
+        columns=['ptf']
+    )
+    pmerger = ptf.reindex(catalog.index)['ptf']
 
     # Compute baseline merger probability
     dsfs = np.log10(calibrations.LHa2SFR(catalog['L_Ha'])) - sfs(catalog['logmass_adjusted'])
@@ -2348,6 +3562,200 @@ def make_figure_merger_prob_vs_environment(
         logger.info(f"Saved: {output_file}")
 
 
+def make_figure_completeness_purity(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger,
+    n_thresholds: int = 50
+) -> None:
+    """
+    Figure: Completeness vs Purity for different ptf thresholds.
+
+    Shows the trade-off between completeness and purity when varying the threshold
+    for classifying sources as mergers based on ptf = P[ambiguous] + P[merger].
+
+    Definitions:
+    - True positives: Human labels where (label == 2) or (label == 3)
+    - Predicted positives: Sources where ptf > threshold
+    - Completeness: Fraction of true positives correctly identified (recall/TPR)
+    - Purity: Fraction of predicted positives that are true positives (precision)
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data() containing:
+        - 'prob_labels_iter': Probabilistic label predictions (N, 5)
+        - 'labels': Human labels (N,)
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    n_thresholds : int
+        Number of threshold values to evaluate (default: 50)
+    """
+    logger.info("Generating Figure: Completeness vs Purity")
+
+    # Load data
+    prob_labels_iter = data['prob_labels_iter']
+    labels = data['labels']
+
+    # Compute ptf = P[ambiguous] + P[merger]
+    ptf = prob_labels_iter[:, 2] + prob_labels_iter[:, 3]
+
+    # Define true positives: human labels 2 (ambiguous) or 3 (merger)
+    true_positive = (labels == 2) | (labels == 3)
+    n_true_positive = np.sum(true_positive)
+
+    # Define threshold range
+    thresholds = np.linspace(0, 1, n_thresholds)
+
+    # Compute completeness and purity for each threshold
+    completeness = np.zeros(n_thresholds)
+    purity = np.zeros(n_thresholds)
+
+    for i, threshold in enumerate(thresholds):
+        # Predicted positives at this threshold
+        predicted_positive = ptf > threshold
+        n_predicted_positive = np.sum(predicted_positive)
+
+        # True positives at this threshold (correct detections)
+        correctly_detected = true_positive & predicted_positive
+        n_correctly_detected = np.sum(correctly_detected)
+
+        # Completeness: fraction of true positives that are detected
+        if n_true_positive > 0:
+            completeness[i] = n_correctly_detected / n_true_positive
+        else:
+            completeness[i] = np.nan
+
+        # Purity: fraction of predicted positives that are true positives
+        if n_predicted_positive > 0:
+            purity[i] = n_correctly_detected / n_predicted_positive
+        else:
+            purity[i] = np.nan
+
+    # Create figure
+    fig, ax = plt.subplots(1, 1, figsize=(7, 6))
+
+    # Plot completeness vs purity
+    ax.plot(purity, completeness, 'o-', lw=2, markersize=4, color=colorlists.slides['bluebird'])
+
+    # Add key threshold markers
+    key_thresholds = [0.3, 0.5, 0.7, 0.9]
+    for thresh in key_thresholds:
+        idx = np.argmin(np.abs(thresholds - thresh))
+        ax.plot(purity[idx], completeness[idx], 'o', markersize=8,
+                color=colorlists.slides['orange'], zorder=10)
+        ax.annotate(f'{thresh:.1f}',
+                   xy=(purity[idx], completeness[idx]),
+                   xytext=(10, 10), textcoords='offset points',
+                   fontsize=10, color=colorlists.slides['orange'],
+                   bbox=dict(boxstyle='round,pad=0.3', fc='white', ec=colorlists.slides['orange'], alpha=0.8))
+
+    # Add diagonal reference line (where completeness = purity)
+    lims = [0, 1]
+    ax.plot(lims, lims, 'k--', alpha=0.3, lw=1, label='Completeness = Purity')
+
+    # Labels and formatting
+    ax.set_xlabel('Purity (Precision)', fontsize=14)
+    ax.set_ylabel('Completeness (Recall)', fontsize=14)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='lower left', fontsize=10)
+
+    # Add text with sample info
+    ek.text(
+        0.975, 0.025,
+        f'''N(true positive) = {n_true_positive}
+N(total) = {len(labels)}''',
+        ax=ax,
+        ha='right',
+        va='bottom',
+        fontsize=10
+    )
+
+    # Add title
+    ax.set_title(r'Completeness vs Purity for $p_{\rm tf}$ Threshold', fontsize=14, pad=10)
+
+    plt.tight_layout()
+
+    if output_dir is not None:
+        output_file = output_dir / 'fig_completeness_purity.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved: {output_file}")
+    else:
+        plt.show()
+
+    # Log some statistics
+    logger.info(f"True positives (human labels 2 or 3): {n_true_positive} / {len(labels)}")
+    logger.info(f"Threshold range: [{thresholds.min():.2f}, {thresholds.max():.2f}]")
+    logger.info(f"Max completeness: {np.nanmax(completeness):.3f} (at threshold={thresholds[np.nanargmax(completeness)]:.3f})")
+    logger.info(f"Max purity: {np.nanmax(purity):.3f} (at threshold={thresholds[np.nanargmax(purity)]:.3f})")
+
+
+def make_toymodel_figure(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger
+) -> None:
+    """
+    Figure 10: Toy model analysis of internal vs merger-driven starbursts.
+
+    Creates a 3x3 panel figure showing three toy model variants:
+    - Row 1 (flat): Flat external, mass-dependent internal
+    - Row 2 (data): xi-dependent external, flat internal
+    - Row 3 (int): xi-dependent external, mass-dependent internal
+
+    Each row has:
+    - Column 1: Absolute merger fraction vs S
+    - Column 2: Normalized merger fraction vs S
+    - Column 3: Model setup (PDF distributions)
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary containing 'toymodel' key from generate_toymodel_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+    """
+    logger.info("Generating Figure 10: Toy model analysis")
+
+    # Extract toy model data
+    toymodel_data = data['toymodel']
+    models = toymodel_data['models']
+    mass_keys = toymodel_data['mass_keys']
+    tags = ['flat', 'data', 'int']
+
+    # Create 3x3 subplot grid
+    fig, axarr = plt.subplots(3, 3, figsize=(15, 13))
+
+    for idx, tag in enumerate(tags):
+        tm, sample_d = models[tag]
+
+        # Plot model results (columns 0-1)
+        _plot_model_results(sample_d, mass_keys, axarr=axarr[idx, :2], show_legend=(idx==0))
+
+        # Plot model setup (column 2)
+        _plot_model_setup(tm, axarr=axarr[idx, 2:])
+
+        # Set log scale and limits for column 1
+        axarr[idx, 1].set_yscale('log')
+        axarr[idx, 1].set_ylim(0.2, 40.)
+
+    plt.tight_layout()
+
+    if output_dir is not None:
+        output_file = output_dir / 'fig10_toymodel.pdf'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        logger.info(f"Saved: {output_file}")
+
+
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
@@ -2393,7 +3801,7 @@ Examples:
     parser.add_argument(
         '--figures',
         type=str,
-        help='Comma-separated list of figure numbers to generate (1-9). If not specified, generates all.'
+        help='Comma-separated list of figure numbers to generate (1-10). If not specified, generates all.'
     )
 
     parser.add_argument(
@@ -2425,15 +3833,20 @@ Examples:
 
         # Load data
         #data = load_data(config, logger)
-        data = load_data_multirun(Path('../output/'), 
+        data = load_data_multirun(Path('../output/'),
                                   ['fiducial'] + [ f'fiducial_rerun_{ix}' for ix in range(5)],
                                   logger)
+
+        # Generate toy model data (always, for Figure 10)
+        logger.info("Generating toy model data...")
+        toymodel_data = generate_toymodel_data(logger=logger)
+        data['toymodel'] = toymodel_data
 
         # Determine which figures to generate
         if args.figures:
             figure_nums = [int(x.strip()) for x in args.figures.split(',')]
         else:
-            figure_nums = list(range(1, 10))
+            figure_nums = list(range(1, 11))
 
         logger.info("=" * 60)
         logger.info(f"GENERATING FIGURES: {figure_nums}")
@@ -2450,6 +3863,7 @@ Examples:
             7: make_figure_hamorph_distributions,
             8: make_figure_gini_m20_space,
             9: make_figure_merger_prob_vs_environment,
+            10: make_toymodel_figure,
         }
 
         for fig_num in figure_nums:
