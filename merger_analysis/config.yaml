@@ -22,11 +22,11 @@ training:
   resume: false
   s4l_weight: 0.25
   patience_limit: 30
-  supervised_chunk_size: 128  # Chunk size for processing all labeled data per epoch
+  supervised_chunk_size: 32  # Chunk size for processing all labeled data per epoch
 
 # Inference parameters
 inference:
-  batch_size: 1024
+  batch_size: 128
 
 # Dimensionality reduction
 analysis:

@@ -48,11 +48,13 @@ from typing import Dict, Tuple, Optional
 
 import yaml
 import numpy as np
+from scipy import stats
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import colors
 from tqdm import tqdm
+import cmasher
 
 # Add pieridae to path
 sys.path.insert(0, str(Path(__file__).parents[2]))
@@ -69,6 +71,28 @@ from ekfstats import sampling
 # Import load_data and load_data_multirun from make_punchlines
 from make_punchlines import load_data, load_data_multirun
 
+cmap = ec.colormap_from_list([
+    ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base,
+    colorlists.slides['orange'],
+    plt.cm.coolwarm(0.5),
+    colorlists.slides['bluebird'],
+    ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base,
+])
+
+cmap_dsfs = ec.colormap_from_list([colorlists.slides['orange'], plt.cm.coolwarm(0.5), colorlists.slides['bluebird']])
+
+cmap_alt = ec.colormap_from_list([
+    ec.ColorBase(colorlists.slides['orange']).modulate(-0.3,-0.1).base,
+    colorlists.slides['orange'],
+    plt.cm.coolwarm(0.5),
+    colorlists.slides['bluebird'],
+    ec.ColorBase(colorlists.slides['bluebird']).modulate(0.3,0.3).base,
+])
+
+custom_arctic = ec.shift_colormap_hue_hcl(
+    cmasher.arctic,
+    ec.find_optimal_hue_shift(cmasher.arctic, '#00B0D3')[0]
+)
 
 def setup_logging(level: str = 'INFO') -> logging.Logger:
     """Setup logging configuration"""
@@ -239,6 +263,303 @@ def make_figure_ha_sfs_merger_fraction_alternates(
     plt.close()
 
     logger.info(f"Saved: {output_file}")
+
+def make_hamorph_differential_split(
+    data: Dict,
+    output_dir: Path,
+    logger: logging.Logger
+) -> pd.DataFrame:
+    """
+    Figure: H-alpha and Continuum morphology differential analysis by mass bin (split into two figures).
+
+    Creates two separate figures (one for continuum, one for H-alpha), each showing:
+    - Top row: Cumulative distribution functions for asymmetry and Gini
+    - Bottom row: Differential (unweighted CDF - weighted CDF) for asymmetry and Gini
+
+    Each morphology parameter is color-coded by stellar mass bin.
+
+    Also performs Kolmogorov-Smirnov tests on weighted vs. unweighted morphology distributions.
+
+    Parameters
+    ----------
+    data : dict
+        Data dictionary from load_data()
+    output_dir : Path
+        Output directory for figures
+    logger : logging.Logger
+        Logger instance
+
+    Returns
+    -------
+    pvals_df : pd.DataFrame
+        DataFrame with KS test p-values indexed by (tracer, morphstat, mass_bin) with columns
+        ['p_lesser', 'p_greater', 'p_twosided'] corresponding to one-sided and two-sided KS tests.
+        lesser: weighted sample skews higher
+        greater: weighted sample skews lower
+    """
+    logger.info("Generating Figure: H-alpha and Continuum morphology differential (split)")
+
+    catalog = data['catalog']
+    catalog = catalog.loc[(catalog['z_spec'] > 0.04) & (catalog['z_spec'] < 0.12)]
+
+    hamorph = data['hamorph']
+
+    if hamorph is None:
+        logger.warning("H-alpha morphology data not available, skipping")
+        return
+
+    # Get merger probability CDF
+    cdf = pd.DataFrame({'pmerger': data['prob_labels_iter'][:,2] + data['prob_labels_iter'][:,3]},
+                       index=data['img_names'])
+
+    # Setup mass bins and colormap
+    xbins = np.linspace(8.25, 10., 10)
+    dx = 1.0
+
+    # Y-bins for different tracers and morphology stats
+    ybins_dict = {
+        'continuum': {
+            'asymmetry': np.linspace(-0.4, 0.5, 30),
+            'gini': np.linspace(0.3, 0.7, 30)
+        },
+        'halpha': {
+            'asymmetry': np.linspace(-0.5, 0.75, 30),
+            'gini': np.linspace(0.35, 0.8, 30)
+        }
+    }
+
+    # Y-limits for differential plots
+    ylims = {'asymmetry': (-0.05, 0.15), 'gini': (-0.04, 0.1)}
+
+    # Morphology parameters
+    morphstats = ['asymmetry', 'gini']
+    morphlabels = [r'$\mathcal{A}$', r'$\mathcal{G}$']
+    morph_names = ['asymmetry', 'Gini']
+
+    # Tracers
+    tracers = ['continuum', 'halpha']
+    tracer_sub = ['c', r'\rm H\alpha']
+    tracer_names = ['continuum', r'H$\alpha$']
+
+    # Initialize dictionary to store KS test p-values
+    # Structure: pvals_dict[(tracer, morphstat, mass_bin)] = (p_lesser, p_greater, p_twosided)
+    pvals_dict = {}
+
+    # Loop through tracers to create two separate figures
+    for tdx, tracer in enumerate(tracers):
+        logger.info(f"  Generating {tracer} figure...")
+
+        # Create figure with 2x2 grid
+        fig, axarr = plt.subplots(2, 2, figsize=(10, 6))
+
+        # Loop through morphology statistics
+        for mdx, ms in enumerate(morphstats):
+            key = f'{tracer}_{ms}'
+
+            # Get axes for this morphology stat
+            ax = axarr[0, mdx]  # Top row: CDF
+            bx = axarr[1, mdx]  # Bottom row: Differential
+
+            # Get y-bins for this tracer and morphology stat
+            ybins = ybins_dict[tracer][ms]
+
+            # Set x-limits
+            ax.set_xlim(ybins[0], ybins[-1])
+            bx.set_xlim(ybins[0], ybins[-1])
+
+            # Loop over mass bins
+            for mass_idx, mass_mid in enumerate(xbins):
+                mass_mask = abs(catalog['logmass_adjusted'].values - mass_mid) < dx
+
+                # Get color for this mass bin
+                cc = cmap((mass_mid - xbins.min()) / (xbins.max() - xbins.min()))
+
+                # Get morphology and weight values for this mass bin
+                morph_values = data['hamorph'].reindex(catalog.index)[key].values[mass_mask]
+                weight_values = cdf.reindex(catalog.index)['pmerger'].values[mass_mask]
+
+                # Unweighted cumulative histogram
+                out = ek.hist(
+                    morph_values,
+                    cumulative=True,
+                    density=True,
+                    histtype='step',
+                    ax=ax,
+                    color=cc,
+                    bins=ybins,
+                    lw=2
+                )
+                unweighted_counts = out[1][0]
+
+                # Weighted histogram
+                out = np.histogram(
+                    morph_values,
+                    weights=weight_values,
+                    bins=ybins,
+                    density=True,
+                )
+
+                # Convert to cumulative
+                weighted_counts = np.cumsum(out[0]) / np.sum(out[0])
+
+                # Plot differential
+                bx.step(
+                    sampling.midpts(ybins),
+                    unweighted_counts - weighted_counts,
+                    where='mid',
+                    color=cc,
+                    lw=2
+                )
+
+                # Perform KS tests on weighted vs unweighted samples
+                # Create weighted morphology sample using random choice with probability weights
+                morph_samp = morph_values.copy()
+                ps = np.where(np.isfinite(morph_samp), weight_values, 0.)
+
+                # Generate weighted sample by random choice
+                if np.sum(ps) > 0:
+                    wmorph_samp = np.random.choice(
+                        morph_samp,
+                        p=ps / np.sum(ps),
+                        replace=True,
+                        size=morph_samp.size
+                    )
+
+                    # KS tests: lesser = weighted skews higher, greater = weighted skews lower
+                    weighted_towards_lesser = stats.ks_2samp(
+                        *sampling.fmasker(morph_samp, wmorph_samp),
+                        alternative='lesser'
+                    )
+                    weighted_towards_greater = stats.ks_2samp(
+                        *sampling.fmasker(morph_samp, wmorph_samp),
+                        alternative='greater'
+                    )
+                    weighted_is_same = stats.ks_2samp(
+                        *sampling.fmasker(morph_samp, wmorph_samp),
+                        alternative='two-sided'
+                    )
+
+                    # Store p-values
+                    pvals_dict[(tracer, ms, mass_mid)] = (
+                        weighted_towards_lesser.pvalue,
+                        weighted_towards_greater.pvalue,
+                        weighted_is_same.pvalue
+                    )
+                else:
+                    # No valid weights, store NaN
+                    pvals_dict[(tracer, ms, mass_mid)] = (np.nan, np.nan, np.nan)
+
+            # Add horizontal line at 0 for differential plot
+            bx.axhline(0., ls=':', color='lightgrey')
+
+            # Add colorbar to first subplot only
+            if mdx == 0:
+                ek.colorbar_inset(
+                    cmap,
+                    xbins[0],
+                    xbins[-1],
+                    x=0.7,
+                    y=0.1,
+                    height=0.6,
+                    width=0.05,
+                    label=ek.common_labels['logmstar'],
+                    orientation='vertical',
+                    ax=ax
+                )
+
+            # Labels
+            mlbl = rf'{morphlabels[mdx]}$_{{{tracer_sub[tdx]}}}$'
+            bx.set_xlabel(rf'{mlbl}$=${morph_names[mdx].capitalize()}, {tracer_names[tdx]}')
+            ax.set_ylabel(rf'F({mlbl})')
+            bx.set_ylabel(rf'F({mlbl}) - F$_w$({mlbl})', labelpad=-10)
+            ax.set_xticks([])
+            bx.set_ylim(ylims[ms])
+            bx.set_yticks(bx.get_yticks()[:-1])
+
+        # Adjust layout
+        plt.tight_layout()
+        plt.subplots_adjust(wspace=0.35, hspace=0.02)
+
+        # Add colored background to differential plots
+        for ax in axarr[1]:
+            ax.autoscale(enable=False, axis='y')
+
+            # Red background for positive values (shifted higher)
+            ax.axhspan(
+                0.,
+                ax.get_ylim()[1],
+                color=ec.ColorBase(colorlists.slides['red']).modulate(0.5).base,
+                zorder=-1
+            )
+            # Yellow background for negative values (shifted lower)
+            ax.axhspan(
+                ax.get_ylim()[0],
+                0.,
+                color=ec.ColorBase(colorlists.slides['yellow']).modulate(0.3).base,
+                zorder=-1
+            )
+
+        # Add annotation text to first differential subplot
+        ax_text = axarr[1, 0]
+        ek.text(
+            0.975,
+            0.025,
+            '''Pr[TF]-weighted
+PDF shifted lower''',
+            color=ec.ColorBase(colorlists.slides['yellow']).modulate(-0.3).base,
+            ax=ax_text,
+            fontsize=12
+        )
+        ek.text(
+            0.975,
+            0.975,
+            '''Pr[TF]-weighted
+PDF shifted
+higher''',
+            color=colorlists.slides['red'],
+            ax=ax_text,
+            fontsize=12
+        )
+
+        # Save figure
+        if output_dir is not None:
+            output_file = output_dir / f'fig_hamorph_differential_{tracer}.pdf'
+            plt.savefig(output_file, dpi=300, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Saved: {output_file}")
+        else:
+            plt.show()
+
+    # Convert p-values dictionary to DataFrame
+    # Create multi-index from dictionary keys
+    index_tuples = list(pvals_dict.keys())
+    index = pd.MultiIndex.from_tuples(index_tuples, names=['tracer', 'morphstat', 'mass_bin'])
+
+    # Create DataFrame with p-value columns
+    pvals_df = pd.DataFrame(
+        list(pvals_dict.values()),
+        index=index,
+        columns=['p_lesser', 'p_greater', 'p_twosided'],
+    ).round(2)
+    pvals_df['description'] =  ''
+    for name,row in pvals_df.iterrows():
+        s = ''
+        if row.p_twosided > 0.05:
+            s = 'Statistically indistinct from reference;'
+        else:
+            #if (row.p_lesser > 0.05) and (row.p_greater>0.05):
+            #    s = 'Statistically indistinguishable between shifted down and up'
+            if row.p_lesser > 0.05:
+                s = s + 'Consistent with f_w shifted higher;'
+            if row.p_greater > 0.05:
+                s = s + 'Consistent with f_w shifted lower;'
+        if s == '':
+            s = 'Statistically distinct from ref w/o monotonic shift'
+        s = s.strip(';')
+        pvals_df.loc[name, 'description'] = s
+    logger.info(f"Computed KS test p-values for {len(pvals_df)} combinations")
+
+    return pvals_df
 
 
 def make_figure_merger_prob_vs_dsfs_alternates(

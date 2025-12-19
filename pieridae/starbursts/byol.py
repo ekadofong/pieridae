@@ -83,14 +83,16 @@ class BYOLModelManager:
     """
 
     def __init__(
-        self,
+        self,        
         config: Dict[str, Any],
         output_path: Path,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        n_classes: Optional[int] = 5,        
     ):
         self.config = config
         self.output_path = Path(output_path)
         self.output_path.mkdir(parents=True, exist_ok=True)
+        self.n_classes = n_classes
 
         self.logger = logger or self._setup_default_logger()
         self.device = self._setup_device()
@@ -209,8 +211,8 @@ class BYOLModelManager:
 
         # Semi-supervised classification head (5 classes: undisturbed, ambiguous, merger, fragmentation, artifact)
         # Uses encoder representation (not the BYOL projection)
-        self.classifier = nn.Linear(representation_dim, 5).to(self.device)
-        self.logger.info(f"Created classification head: {representation_dim} -> 5 classes")
+        self.classifier = nn.Linear(representation_dim, self.n_classes).to(self.device)
+        self.logger.info(f"Created classification head: {representation_dim} -> {self.n_classes} classes")
 
         self.logger.info(f"BYOL model setup complete on {self.device}")
         return self.learner
@@ -278,7 +280,8 @@ class BYOLModelManager:
         num_epochs = self.config['training']['num_epochs']
         save_interval = self.config['training']['save_interval']
         batch_size = self.config['training']['batch_size']
-        supervised_chunk_size = self.config['training'].get('supervised_chunk_size', 512)
+        supervised_chunk_size = self.config['training'].get('supervised_chunk_size', 32)
+
 
         # Pre-compute labeled indices for efficiency
         if labels is not None:
@@ -299,22 +302,28 @@ class BYOLModelManager:
 
         for epoch in tqdm(range(start_epoch, num_epochs), desc="Training BYOL"):
             try:
-                # Sample random batch for BYOL self-supervised learning
+                # Zero gradients before accumulation
+                optimizer.zero_grad()
+
+                # 1. Self-supervised BYOL loss
                 indices = np.random.permutation(len(images))[:batch_size]
                 batch = torch.tensor(
                     images[indices],
                     dtype=torch.float32
                 ).to(self.device)
 
-                # Calculate self-supervised BYOL loss
                 self_loss = self.learner(batch)
+                self_loss.backward()  # Backward immediately, frees computation graph
 
-                # Semi-supervised classification loss - process ALL labeled samples
-                super_loss = 0.
+                self_loss_value = self_loss.item()  # Save for logging
+                del batch, self_loss  # Free memory
+
+                # 2. Semi-supervised classification loss with gradient accumulation
+                super_loss_value = 0.0
                 if labeled_indices is not None and n_labeled > 0:
                     # Process all labeled samples in chunks
                     n_chunks = int(np.ceil(n_labeled / supervised_chunk_size))
-                    chunk_losses = []
+                    valid_chunks = 0
 
                     for chunk_idx in range(n_chunks):
                         # Get chunk indices
@@ -322,19 +331,19 @@ class BYOLModelManager:
                         end_idx = min((chunk_idx + 1) * supervised_chunk_size, n_labeled)
                         chunk_indices = labeled_indices[start_idx:end_idx]
 
+                        # Skip chunks with only 1 sample (batchnorm requires >1)
+                        if len(chunk_indices) < 2:
+                            continue
+
+                        valid_chunks += 1
+
                         # Load chunk images
                         chunk_batch = torch.tensor(
                             images[chunk_indices],
                             dtype=torch.float32
                         ).to(self.device)
 
-                        # Extract representations without computing gradients for encoder
-                        # (encoder is updated only via BYOL loss)
-                        with torch.no_grad():
-                            _, representation = self.learner(chunk_batch, return_embedding=True)
-
-                        # Detach and require gradients only for classifier
-                        representation = representation.detach().requires_grad_(True)
+                        _, representation = self.learner(chunk_batch, return_embedding=True)
 
                         # Get labels for this chunk (convert 1-5 to 0-4)
                         chunk_labels = torch.tensor(
@@ -347,15 +356,27 @@ class BYOLModelManager:
 
                         # Cross-entropy loss for this chunk
                         chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
-                        chunk_losses.append(chunk_loss)
 
-                    # Average loss across all chunks
-                    super_loss = torch.stack(chunk_losses).mean()
+                        # Scale by weight and number of valid chunks, then backward
+                        # We'll divide by valid_chunks after the loop, so use n_chunks estimate for now
+                        # This will be approximately correct
+                        scaled_loss = (self.config['training']['s4l_weight'] / n_chunks) * chunk_loss
+                        scaled_loss.backward()  # Gradients accumulate, graph freed immediately
 
-                loss = self_loss + self.config['training']['s4l_weight']*super_loss
+                        # Track loss value for logging
+                        super_loss_value += chunk_loss.item()
 
-                optimizer.zero_grad()
-                loss.backward()
+                        # Free memory
+                        del representation, logits, chunk_batch, chunk_labels, chunk_loss, scaled_loss
+                        if self.device.type == 'mps':
+                            torch.mps.empty_cache()
+
+                    # Average for logging
+                    if valid_chunks > 0:
+                        super_loss_value = super_loss_value / valid_chunks
+
+                # Compute total loss value for logging
+                loss_value = self_loss_value + self.config['training']['s4l_weight'] * super_loss_value
 
                 # Gradient clipping for MPS stability
                 if self.device.type == 'mps':
@@ -363,26 +384,26 @@ class BYOLModelManager:
 
                 optimizer.step()
                 self.learner.update_moving_average()
-                
 
-                if (loss > best_loss):
-                    stop += 1 
+
+                if (loss_value > best_loss):
+                    stop += 1
                     checkpoint=False
                 else:
                     checkpoint=True
                     stop = 0
 
-                    
+
                 if (epoch % 10 == 0) or stop:
                     if labels is not None:
                         self.logger.info(
-                            f"Epoch {epoch}, Total Loss: {loss.item():.4f} "
-                            f"(Self-supervised: {self_loss.item():.4f}, "
-                            f"Supervised: {super_loss.item():.4f} on {n_labeled} samples)."
+                            f"Epoch {epoch}, Total Loss: {loss_value:.4f} "
+                            f"(Self-supervised: {self_loss_value:.4f}, "
+                            f"Supervised: {super_loss_value:.4f} on {n_labeled} samples)."
                             f" Patience left: {patience_limit-stop}/{patience_limit}"
                         )
                     else:
-                        self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
+                        self.logger.info(f"Epoch {epoch}, Loss: {loss_value:.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
 
                 # Save checkpoint
                 if ((epoch + 1) % save_interval == 0) or ((epoch > 200) and checkpoint):
@@ -391,7 +412,7 @@ class BYOLModelManager:
                         'model_state_dict': self.learner.state_dict(),
                         'classifier_state_dict': self.classifier.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': loss.item(),
+                        'loss': loss_value,
                         'config': self.config,
                         'device': str(self.device)
                     }
@@ -399,8 +420,8 @@ class BYOLModelManager:
                     self.logger.info(f"Checkpoint saved at epoch {epoch}")
 
                     # If this is a best checkpoint (loss improved), save it separately
-                    if checkpoint and loss.item() < best_loss:
-                        best_loss = loss.item()
+                    if checkpoint and loss_value < best_loss:
+                        best_loss = loss_value
                         best_epoch = epoch
                         torch.save(checkpoint_dict, best_checkpoint_path)
                         self.logger.info(f"Best checkpoint saved at epoch {epoch} with loss {best_loss:.4f}")
@@ -499,7 +520,7 @@ class BYOLModelManager:
     def extract_embeddings(
         self,
         images: np.ndarray,
-        batch_size: Optional[int] = None
+        batch_size: Optional[int] = None,
     ) -> np.ndarray:
         """
         Extract embeddings from images using trained model.
@@ -1047,10 +1068,12 @@ class FrozenClassifier:
         model_path: Path,
         config: Dict[str, Any],
         device: Optional[torch.device] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        n_classes: Optional[int] = 5,        
     ):
         self.config = config
         self.model_path = Path(model_path)
+        self.n_classes = n_classes
         self.logger = logger or self._setup_default_logger()
 
         # Setup device
@@ -1113,12 +1136,12 @@ class FrozenClassifier:
             representation_dim = dummy_repr.shape[-1]
 
         # Create and load classifier
-        self.classifier = nn.Linear(representation_dim, 5).to(self.device)
+        self.classifier = nn.Linear(representation_dim, self.n_classes).to(self.device)
         self.classifier.load_state_dict(checkpoint['classifier_state_dict'])
         self.classifier.eval()
 
         self.logger.info(
-            f"Loaded classifier: {representation_dim} -> 5 classes"
+            f"Loaded classifier: {representation_dim} -> {self.n_classes} classes"
         )
 
     def _setup_default_logger(self) -> logging.Logger:
@@ -1224,8 +1247,8 @@ class FrozenClassifier:
         # LabelPropagation returns (N, 6) where:
         #   - column 0: probability of class 0 (unclassified/background)
         #   - columns 1-5: probabilities for classes 1-5
-        prob_labels_iter = np.zeros((len(embeddings), 6))
-        prob_labels_iter[:, 1:6] = probs_0indexed
+        prob_labels_iter = np.zeros((len(embeddings), self.n_classes + 1))
+        prob_labels_iter[:, 1:(self.n_classes+1)] = probs_0indexed
 
         # Get hard predictions (argmax + 1 to convert to 1-indexed)
         iterative_labels = np.argmax(probs_0indexed, axis=1) + 1
@@ -1690,7 +1713,7 @@ def compute_classification_metrics(
     # Purity (for each predicted cluster, fraction of most common true class)
     cluster_purities = []
     for cluster_id in range(n_classes):
-        cluster_mask = predicted_labels == cluster_id
+        cluster_mask = predicted_labels == (cluster_id+1)
         if np.sum(cluster_mask) > 0:
             true_labels_in_cluster = true_labels[cluster_mask]
             most_common_count = np.max(np.bincount(true_labels_in_cluster))
@@ -1707,7 +1730,7 @@ def compute_classification_metrics(
     # Completeness (for each true class, fraction in most common predicted cluster)
     class_completeness = []
     for class_id in range(n_classes):
-        class_mask = true_labels == class_id
+        class_mask = true_labels == (class_id+1)
         if np.sum(class_mask) > 0:
             pred_labels_in_class = predicted_labels[class_mask]
             most_common_cluster = np.argmax(np.bincount(pred_labels_in_class))
@@ -1721,10 +1744,13 @@ def compute_classification_metrics(
     overall_completeness = np.mean(class_completeness)
 
     # Classification report
+    print(list(class_names.keys()))
+    print(true_labels)
+    print(predicted_labels)
     class_report = classification_report(
         true_labels,
         predicted_labels,
-        target_names=[class_names[i] for i in range(n_classes)],
+        target_names=list(class_names.keys()),
         output_dict=True
     )
 
@@ -1732,10 +1758,10 @@ def compute_classification_metrics(
         'overall_purity': float(overall_purity),
         'overall_completeness': float(overall_completeness),
         'cluster_purities': {
-            class_names[i]: float(p) for i, p in enumerate(cluster_purities)
+            class_names[key]: float(p) for key, p in zip(class_names.keys(), cluster_purities)
         },
         'class_completeness': {
-            class_names[i]: float(c) for i, c in enumerate(class_completeness)
+            class_names[key]: float(c) for key, c in zip(class_names.keys(), class_completeness)
         },
         'confusion_matrix': conf_matrix.tolist(),
         'classification_report': class_report,

@@ -256,10 +256,18 @@ def run_training(
     logger.info("TRAINING MODE")
     logger.info("=" * 60)
 
+    training_labels = labels.copy()
+    ndiscard = int(len(training_labels)*0.9)
+    print(f'Discarding {ndiscard} labels to construct a 10% training set')
+    training_labels[np.random.choice(np.arange(0, labels.size), replace=False, size=ndiscard)] = 0    
+    #print(training_labels)
+    #print(labels)
+    logger.info(f'trimmed training label set: {int((labels>0).sum())} -> {int((training_labels>0).sum())}')
+
     model_manager = BYOLModelManager(config, output_path, logger)
     model_manager.train_model(
         images,
-        labels,
+        training_labels,
         resume=config['training'].get('resume', False),
         patience_limit=config['training'].get('patience_limit', 20)
     )
@@ -315,8 +323,12 @@ def run_analysis(
     )
 
     # Get probabilistic predictions
-    prob_labels = classifier.predict(images)
-    predicted_labels = np.argmax(prob_labels, axis=1)
+    logger.info("Running classification...")
+    iterative_labels, n_labels_iter, prob_labels_iter, stats = \
+        classifier.iterative_propagation(embeddings, true_labels)
+    predicted_labels = np.argmax(prob_labels_iter, axis=1)
+    
+
 
     # Compute metrics
     logger.info("Computing classification metrics...")
@@ -337,7 +349,7 @@ def run_analysis(
     predictions_path = output_path / 'predictions.pkl'
     with open(predictions_path, 'wb') as f:
         pickle.dump({
-            'prob_labels': prob_labels,
+            'prob_labels': prob_labels_iter,
             'predicted_labels': predicted_labels,
             'true_labels': true_labels,
             'img_names': img_names
@@ -480,9 +492,9 @@ Examples:
 
     # Override config with command line arguments
     if args.output_path:
-        config['data']['output_path'] = Path(args.output_path)
+        config['data']['output_path'] = Path(args.output_path).parent
     else:
-        config['data']['output_path'] = Path(config['data']['output_path']) / 'simulated_sfourl'
+        config['data']['output_path'] = Path(config['data']['output_path']).parent / 'simulated_sfourl'
 
     if args.epochs:
         config['training']['num_epochs'] = args.epochs
@@ -545,7 +557,7 @@ Examples:
         if args.mode == 'train':
             run_training(config, images, img_names, labels_1indexed, output_path, logger)
         elif args.mode == 'analyze':
-            run_analysis(config, images, img_names, true_labels, class_names, output_path, logger)
+            run_analysis(config, images, img_names, labels_1indexed, class_names, output_path, logger)
         elif args.mode == 'full':
             run_full_pipeline(config, images, img_names, labels_1indexed, class_names, output_path, logger)
 

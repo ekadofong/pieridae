@@ -147,7 +147,8 @@ def load_fire2_mock_images(
     mock_images_dir: Path,
     galaxy_tags: List[str],
     n_per_galaxy: int = None,
-    logger: logging.Logger = None
+    logger: logging.Logger = None,
+    use_metadata: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[int, str]]:
     """
     Load FIRE2 mock images from generated datasets.
@@ -197,7 +198,7 @@ def load_fire2_mock_images(
 
         # Load metadata
         metadata_path = galaxy_dir / 'metadata.json'
-        if metadata_path.exists():
+        if metadata_path.exists() and use_metadata:
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
             image_metadata_list = metadata.get('images', [])
@@ -215,7 +216,7 @@ def load_fire2_mock_images(
 
         if logger:
             logger.info(f"Loading {n_to_load} images from {tag}...")
-
+            #logger.info(f'Loading: {image_metadata_list[:n_to_load]}')
         # Load images
         loaded_count = 0
         for img_meta in image_metadata_list[:n_to_load]:
@@ -396,10 +397,13 @@ def create_visualizations(
     output_path: Path,
     embeddings_pca: np.ndarray,
     embeddings_umap: np.ndarray,
-    labels: np.ndarray = None,
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    class_names: dict,
+    metrics: dict,
     logger: logging.Logger = None
 ) -> None:
-    """Create PCA and UMAP visualizations"""
+    """Create evaluation visualizations"""
     if not PLOTTING_AVAILABLE:
         if logger:
             logger.warning("Matplotlib not available, skipping visualizations")
@@ -408,92 +412,108 @@ def create_visualizations(
     if logger:
         logger.info("Creating visualizations...")
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
-    # PCA plot
-    if labels is not None:
-        # Color by labels (1-indexed, 0 is unlabeled)
-        unique_labels = np.unique(labels[labels > 0])
-        colors = plt.cm.tab10(np.linspace(0, 1, len(unique_labels)))
+    # Get unique class IDs (1-indexed, 0 is unlabeled)
+    unique_labels = np.unique(true_labels[true_labels > 0])
+    colors = plt.cm.tab10(np.linspace(0, 1, len(unique_labels)))
 
-        for idx, label in enumerate(unique_labels):
-            mask = labels == label
-            axes[0].scatter(
-                embeddings_pca[mask, 0],
-                embeddings_pca[mask, 1],
-                c=[colors[idx]],
-                label=f'Class {label}',
-                alpha=0.6,
-                s=20
-            )
-
-        # Plot unlabeled
-        mask = labels == 0
-        if mask.any():
-            axes[0].scatter(
-                embeddings_pca[mask, 0],
-                embeddings_pca[mask, 1],
-                c='lightgray',
-                label='Unlabeled',
-                alpha=0.3,
-                s=10
-            )
-
-        axes[0].legend()
-    else:
-        axes[0].scatter(
-            embeddings_pca[:, 0],
-            embeddings_pca[:, 1],
-            alpha=0.5,
-            s=10
+    # 1. PCA with ground truth labels
+    for idx, label in enumerate(unique_labels):
+        mask = true_labels == label
+        axes[0, 0].scatter(
+            embeddings_pca[mask, 0],
+            embeddings_pca[mask, 1],
+            c=[colors[idx]],
+            label=class_names.get(label, f'Class {label}'),
+            alpha=0.6,
+            s=20
         )
+    axes[0, 0].set_xlabel('PC1')
+    axes[0, 0].set_ylabel('PC2')
+    axes[0, 0].set_title('PCA: Ground Truth Labels')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True, alpha=0.3)
 
-    axes[0].set_xlabel('PC1')
-    axes[0].set_ylabel('PC2')
-    axes[0].set_title('PCA Embeddings')
-    axes[0].grid(True, alpha=0.3)
-
-    # UMAP plot
-    if labels is not None:
-        for idx, label in enumerate(unique_labels):
-            mask = labels == label
-            axes[1].scatter(
-                embeddings_umap[mask, 0],
-                embeddings_umap[mask, 1],
-                c=[colors[idx]],
-                label=f'Class {label}',
-                alpha=0.6,
-                s=20
-            )
-
-        mask = labels == 0
-        if mask.any():
-            axes[1].scatter(
-                embeddings_umap[mask, 0],
-                embeddings_umap[mask, 1],
-                c='lightgray',
-                label='Unlabeled',
-                alpha=0.3,
-                s=1,
-                zorder=0
-            )
-
-        axes[1].legend()
-    else:
-        axes[1].scatter(
-            embeddings_umap[:, 0],
-            embeddings_umap[:, 1],
-            alpha=0.5,
-            s=10
+    # 2. PCA with predicted labels
+    for idx, label in enumerate(unique_labels):
+        mask = predicted_labels == label
+        axes[0, 1].scatter(
+            embeddings_pca[mask, 0],
+            embeddings_pca[mask, 1],
+            c=[colors[idx]],
+            label=class_names.get(label, f'Class {label}'),
+            alpha=0.6,
+            s=20
         )
+    axes[0, 1].set_xlabel('PC1')
+    axes[0, 1].set_ylabel('PC2')
+    axes[0, 1].set_title('PCA: Predicted Labels')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True, alpha=0.3)
 
-    axes[1].set_xlabel('UMAP1')
-    axes[1].set_ylabel('UMAP2')
-    axes[1].set_title('UMAP Embeddings')
-    axes[1].grid(True, alpha=0.3)
+    # 3. Confusion matrix
+    try:
+        import seaborn as sns
+        conf_matrix = np.array(metrics['confusion_matrix'])
+        sns.heatmap(
+            conf_matrix,
+            annot=True,
+            fmt='d',
+            cmap='Blues',
+            xticklabels=[class_names.get(i, f'Class {i}') for i in unique_labels],
+            yticklabels=[class_names.get(i, f'Class {i}') for i in unique_labels],
+            ax=axes[1, 0],
+            cbar_kws={'label': 'Count'}
+        )
+        axes[1, 0].set_xlabel('Predicted')
+        axes[1, 0].set_ylabel('True')
+        axes[1, 0].set_title('Confusion Matrix')
+    except ImportError:
+        axes[1, 0].text(0.5, 0.5, 'Seaborn not available\nfor confusion matrix',
+                        ha='center', va='center')
+        axes[1, 0].set_title('Confusion Matrix')
+
+    # 4. Metrics summary
+    axes[1, 1].axis('off')
+
+    # Build metrics text from class_names
+    class_purities_text = "\n".join([
+        f"  {class_names.get(label, f'Class {label}')}: {metrics['cluster_purities'].get(class_names.get(label, f'class_{label}'), 0.0):.3f}"
+        for label in unique_labels
+    ])
+
+    class_completeness_text = "\n".join([
+        f"  {class_names.get(label, f'Class {label}')}: {metrics['class_completeness'].get(class_names.get(label, f'class_{label}'), 0.0):.3f}"
+        for label in unique_labels
+    ])
+
+    metrics_text = f"""
+Classification Metrics Summary
+
+Overall Purity: {metrics['overall_purity']:.3f}
+Overall Completeness: {metrics['overall_completeness']:.3f}
+
+Per-Class Purity:
+{class_purities_text}
+
+Per-Class Completeness:
+{class_completeness_text}
+
+Precision (weighted avg): {metrics['classification_report']['weighted avg']['precision']:.3f}
+Recall (weighted avg): {metrics['classification_report']['weighted avg']['recall']:.3f}
+F1-Score (weighted avg): {metrics['classification_report']['weighted avg']['f1-score']:.3f}
+    """
+
+    axes[1, 1].text(
+        0.1, 0.5, metrics_text,
+        fontsize=11,
+        family='monospace',
+        verticalalignment='center'
+    )
 
     plt.tight_layout()
-    plt.savefig(output_path / 'embeddings_visualization.png', dpi=300, bbox_inches='tight')
+    plt.savefig(output_path / 'evaluation_results.png', dpi=300, bbox_inches='tight')
     plt.close()
 
     if logger:
@@ -513,10 +533,23 @@ def run_training(
     logger.info("TRAINING MODE")
     logger.info("=" * 60)
 
-    model_manager = BYOLModelManager(config, output_path, logger)
+    training_labels = labels.copy()
+    ndiscard = int(len(training_labels)*0.5)
+    print(f'Discarding {ndiscard} labels to construct a 10% training set')
+    training_labels[np.random.choice(np.arange(0, labels.size), replace=False, size=ndiscard)] = 0    
+    # Save training labels
+    results_path = output_path / 'training_data.pkl'
+    with open(results_path, 'wb') as f: 
+        pickle.dump({
+            'training_labels': training_labels,
+            'f_discard':0.5,
+            'training_images':images[training_labels>0]
+        }, f)
+    n_classes = np.unique(labels).size
+    model_manager = BYOLModelManager(config, output_path, logger, n_classes=n_classes)
     model_manager.train_model(
         images,
-        labels,
+        training_labels,
         resume=config['training'].get('resume', False),
         patience_limit=config['training'].get('patience_limit', 20)
     )
@@ -524,11 +557,194 @@ def run_training(
     logger.info("Training complete")
 
 
+def create_random_mock_grid(
+    images: np.ndarray,
+    true_labels: np.ndarray,
+    predicted_labels: np.ndarray,
+    class_names: dict,
+    output_path: Path,
+    logger: logging.Logger = None
+) -> None:
+    """
+    Create a grid showing correctly classified and misclassified examples.
+    Left column: correctly classified case (broadband + HF)
+    Right column: misclassified case (broadband + HF), or removed if no misclassifications.
+
+    Parameters
+    ----------
+    images : np.ndarray
+        Processed images array, shape (N, C, H, W)
+    true_labels : np.ndarray
+        Array of true labels for each image
+    predicted_labels : np.ndarray
+        Array of predicted labels for each image
+    class_names : dict
+        Mapping from label ID to galaxy tag
+    output_path : Path
+        Directory to save the figure
+    logger : logging.Logger
+        Logger instance
+    """
+    if not PLOTTING_AVAILABLE:
+        if logger:
+            logger.warning("Matplotlib not available, skipping mock image grid")
+        return
+
+    if logger:
+        logger.info("Creating classification examples grid (correct vs misclassified)...")
+
+    # Get unique class IDs (sorted)
+    unique_labels = sorted([k for k in class_names.keys()])
+    n_galaxies = len(unique_labels)
+
+    if n_galaxies > 4:
+        if logger:
+            logger.warning(f"Expected up to 4 galaxies, found {n_galaxies}. Using first 4...")
+        unique_labels = unique_labels[:4]
+        n_galaxies = 4
+
+    # Determine if we have any misclassifications
+    has_misclassifications = np.any(true_labels != predicted_labels)
+
+    if has_misclassifications:
+        # 4 columns: correct BB, correct HF, misclassified BB, misclassified HF
+        n_cols = 4
+        _, axes = plt.subplots(4, n_cols, figsize=(12, 12))
+        show_misclassified = True
+    else:
+        # 2 columns: correct BB, correct HF only
+        n_cols = 2
+        _, axes = plt.subplots(4, n_cols, figsize=(6, 12))
+        show_misclassified = False
+        if logger:
+            logger.info("No misclassifications found - showing only correctly classified examples")
+
+    # Ensure axes is 2D
+    if axes.ndim == 1:
+        axes = axes.reshape(1, -1)
+
+    for row_idx in range(4):
+        if row_idx < n_galaxies:
+            label_id = unique_labels[row_idx]
+            galaxy_name = class_names[label_id]
+
+            # Get correctly classified images for this galaxy
+            correct_mask = (true_labels == label_id) & (predicted_labels == label_id)
+            correct_images_idx = np.where(correct_mask)[0]
+
+            # Get misclassified images for this galaxy (if any)
+            if show_misclassified:
+                misclass_mask = (true_labels == label_id) & (predicted_labels != label_id)
+                misclass_images_idx = np.where(misclass_mask)[0]
+
+            # Select correct example
+            if len(correct_images_idx) > 0:
+                correct_idx = np.random.choice(correct_images_idx)
+                correct_img = images[correct_idx]
+
+                # Broadband (i-band, channel 1)
+                i_band = correct_img[1, :, :]
+                vmin_bb, vmax_bb = np.percentile(i_band, [1, 99])
+
+                ax_bb = axes[row_idx, 0]
+                ax_bb.imshow(i_band, origin='lower', cmap='gray', vmin=vmin_bb, vmax=vmax_bb)
+                ax_bb.set_xticks([])
+                ax_bb.set_yticks([])
+
+                # High-frequency (HF, channel 2)
+                hf_band = correct_img[2, :, :]
+                vmin_hf, vmax_hf = np.percentile(hf_band, [1, 99])
+
+                ax_hf = axes[row_idx, 1]
+                ax_hf.imshow(hf_band, origin='lower', cmap='gray', vmin=vmin_hf, vmax=vmax_hf)
+                ax_hf.set_xticks([])
+                ax_hf.set_yticks([])
+
+                # Add column labels to top row
+                if row_idx == 0:
+                    ax_bb.set_title('Correct\nBroadband', fontsize=10, fontweight='bold', color='green')
+                    ax_hf.set_title('Correct\nHF', fontsize=10, fontweight='bold', color='green')
+
+                # Add row label to first column
+                ax_bb.set_ylabel(galaxy_name, fontsize=11, fontweight='bold')
+            else:
+                # No correct examples
+                axes[row_idx, 0].axis('off')
+                axes[row_idx, 1].axis('off')
+                if row_idx == 0:
+                    axes[row_idx, 0].text(0.5, 0.5, 'No correct\nclassifications',
+                                          ha='center', va='center', fontsize=9)
+
+            # Select misclassified example (if applicable)
+            if show_misclassified:
+                if len(misclass_images_idx) > 0:
+                    misclass_idx = np.random.choice(misclass_images_idx)
+                    misclass_img = images[misclass_idx]
+                    predicted_class = predicted_labels[misclass_idx]
+                    predicted_name = class_names.get(predicted_class, f'Class {predicted_class}')
+
+                    # Broadband (i-band, channel 1)
+                    i_band = misclass_img[1, :, :]
+                    vmin_bb, vmax_bb = np.percentile(i_band, [1, 99])
+
+                    ax_bb = axes[row_idx, 2]
+                    ax_bb.imshow(i_band, origin='lower', cmap='gray', vmin=vmin_bb, vmax=vmax_bb)
+                    ax_bb.set_xticks([])
+                    ax_bb.set_yticks([])
+
+                    # High-frequency (HF, channel 2)
+                    hf_band = misclass_img[2, :, :]
+                    vmin_hf, vmax_hf = np.percentile(hf_band, [1, 99])
+
+                    ax_hf = axes[row_idx, 3]
+                    ax_hf.imshow(hf_band, origin='lower', cmap='gray', vmin=vmin_hf, vmax=vmax_hf)
+                    ax_hf.set_xticks([])
+                    ax_hf.set_yticks([])
+
+                    # Add column labels to top row
+                    if row_idx == 0:
+                        ax_bb.set_title('Misclassified\nBroadband', fontsize=10, fontweight='bold', color='red')
+                        ax_hf.set_title('Misclassified\nHF', fontsize=10, fontweight='bold', color='red')
+
+                    # Add predicted class label
+                    ax_bb.text(0.02, 0.98, f'→{predicted_name}',
+                              transform=ax_bb.transAxes, fontsize=8,
+                              va='top', ha='left', color='red', fontweight='bold',
+                              bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
+                else:
+                    # No misclassifications for this galaxy
+                    axes[row_idx, 2].axis('off')
+                    axes[row_idx, 3].axis('off')
+                    axes[row_idx, 2].text(0.5, 0.5, 'No\nmisclassifications',
+                                          ha='center', va='center', fontsize=9, color='green')
+        else:
+            # Empty row if fewer than 4 galaxies
+            for col_idx in range(n_cols):
+                axes[row_idx, col_idx].axis('off')
+
+    if show_misclassified:
+        title = 'Classification Examples: Correctly Classified vs Misclassified'
+    else:
+        title = 'Classification Examples: All Correctly Classified'
+
+    plt.suptitle(title, fontsize=14, fontweight='bold', y=0.995)
+    plt.tight_layout()
+
+    # Save figure
+    output_file = output_path / 'classification_examples_grid.png'
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    if logger:
+        logger.info(f"Classification examples grid saved to: {output_file}")
+
+
 def run_analysis(
     config: dict,
     images: np.ndarray,
     img_names: np.ndarray,
-    labels: np.ndarray,
+    true_labels: np.ndarray,
+    class_names: dict,
     output_path: Path,
     logger: logging.Logger
 ) -> None:
@@ -536,9 +752,11 @@ def run_analysis(
     logger.info("=" * 60)
     logger.info("ANALYSIS MODE")
     logger.info("=" * 60)
+    #logger.info(f'[classes: {np.unique(true_labels)}]')
 
     # Extract embeddings
-    model_manager = BYOLModelManager(config, output_path, logger)
+    n_classes = np.unique(true_labels).size 
+    model_manager = BYOLModelManager(config, output_path, logger, n_classes=n_classes)
     embeddings = model_manager.extract_embeddings(images)
 
     # PCA and UMAP
@@ -546,47 +764,102 @@ def run_analysis(
     embeddings_pca = analyzer.compute_pca(embeddings)
     embeddings_umap = analyzer.compute_umap(embeddings_pca)
 
-    # Save results
+    # Save dimensionality reduction results
     results_path = output_path / 'dimensionality_reduction_results.pkl'
-    with open(results_path, 'wb') as f:
+    with open(results_path, 'wb') as f: 
         pickle.dump({
             'embeddings_original': embeddings,
             'embeddings_pca': embeddings_pca,
             'embeddings_umap': embeddings_umap,
             'img_names': img_names,
+            'true_labels': true_labels,
             'scaler': analyzer.scaler,
             'pca': analyzer.pca,
             'umap': analyzer.umap_reducer
         }, f)
 
-    logger.info(f"Results saved to: {results_path}")
+    logger.info(f"Dimensionality reduction results saved to: {results_path}")
 
     # Use FrozenClassifier for predictions
-    logger.info("Loading trained classifier for predictions...")
+    logger.info(f"Loading trained classifier for predictions...")
+
     classifier = FrozenClassifier(
         model_path=output_path / 'model_checkpoint.pt',
         config=config,
-        logger=logger
+        logger=logger,
+        n_classes=n_classes     
     )
 
     # Get probabilistic predictions
-    prob_labels = classifier.predict(images)
-    predicted_labels = np.argmax(prob_labels, axis=1)
+    logger.info("Running classification...")
+    iterative_labels, n_labels_iter, prob_labels_iter, stats = \
+        classifier.iterative_propagation(embeddings, true_labels)
+    predicted_labels = np.argmax(prob_labels_iter, axis=1)
+
+    # Compute metrics
+    logger.info("Computing classification metrics...")
+    metrics = compute_classification_metrics(
+        true_labels,
+        predicted_labels,
+        class_names
+    )
+
+    # Save metrics
+    metrics_path = output_path / 'classification_metrics.json'
+    with open(metrics_path, 'w') as f:
+        json.dump(metrics, f, indent=2)
+
+    logger.info(f"Metrics saved to: {metrics_path}")
 
     # Save predictions
     predictions_path = output_path / 'predictions.pkl'
     with open(predictions_path, 'wb') as f:
         pickle.dump({
-            'prob_labels': prob_labels,
+            'prob_labels': prob_labels_iter,
             'predicted_labels': predicted_labels,
-            'true_labels': labels,
+            'true_labels': true_labels,
             'img_names': img_names
         }, f)
 
     logger.info(f"Predictions saved to: {predictions_path}")
 
+    # Create classification examples grid (correct vs misclassified)
+    create_random_mock_grid(
+        images,
+        true_labels,
+        predicted_labels,
+        class_names,
+        output_path,
+        logger=logger
+    )
+
     # Create visualizations
-    create_visualizations(output_path, embeddings_pca, embeddings_umap, labels, logger)
+    create_visualizations(
+        output_path,
+        embeddings_pca,
+        embeddings_umap,
+        true_labels,
+        predicted_labels,
+        class_names,
+        metrics,
+        logger
+    )
+
+    # Print summary
+    logger.info("=" * 60)
+    logger.info("CLASSIFICATION RESULTS")
+    logger.info("=" * 60)
+    logger.info(f"Overall Purity:       {metrics['overall_purity']:.4f}")
+    logger.info(f"Overall Completeness: {metrics['overall_completeness']:.4f}")
+    logger.info("\nPer-class metrics:")
+    for label_id in sorted([k for k in class_names.keys()]):
+        class_name = class_names[label_id]
+        logger.info(
+            f"  {class_name:20s} - "
+            f"Purity: {metrics['cluster_purities'].get(class_name, 0.0):.4f}, "
+            f"Completeness: {metrics['class_completeness'].get(class_name, 0.0):.4f}"
+        )
+    logger.info("=" * 60)
 
     logger.info("Analysis complete")
 
@@ -596,6 +869,7 @@ def run_full_pipeline(
     images: np.ndarray,
     img_names: np.ndarray,
     labels: np.ndarray,
+    class_names: dict,
     output_path: Path,
     logger: logging.Logger
 ) -> None:
@@ -608,7 +882,7 @@ def run_full_pipeline(
     run_training(config, images, img_names, labels, output_path, logger)
 
     # Analysis
-    run_analysis(config, images, img_names, labels, output_path, logger)
+    run_analysis(config, images, img_names, labels, class_names, output_path, logger)
 
     logger.info("Full pipeline complete")
 
@@ -695,9 +969,9 @@ Examples:
 
     # Override config with command line arguments
     if args.output_path:
-        config['data']['output_path'] = Path(args.output_path)
+        config['data']['output_path'] = Path(args.output_path).parent
     else:
-        config['data']['output_path'] = Path(config['data']['output_path']) / 'fire2_sfourl'
+        config['data']['output_path'] = Path(config['data']['output_path']).parent / 'fire2_sfourl'
 
     if args.epochs:
         config['training']['num_epochs'] = args.epochs
@@ -744,9 +1018,9 @@ Examples:
         if args.mode == 'train':
             run_training(config, images_processed, img_names, true_labels, output_path, logger)
         elif args.mode == 'analyze':
-            run_analysis(config, images_processed, img_names, true_labels, output_path, logger)
+            run_analysis(config, images_processed, img_names, true_labels, class_names, output_path, logger)
         elif args.mode == 'full':
-            run_full_pipeline(config, images_processed, img_names, true_labels, output_path, logger)
+            run_full_pipeline(config, images_processed, img_names, true_labels, class_names, output_path, logger)
 
         logger.info("=" * 60)
         logger.info("SUCCESS")

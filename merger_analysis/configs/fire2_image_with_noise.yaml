@@ -21,7 +21,7 @@ projection:
 noise:
   add_noise: true
   noise_type: gaussian
-  gaussian_sigma: 0.05            # 5% noise relative to image mean
+  gaussian_sigma: 0.025            # 5% noise relative to image mean
   gaussian_absolute: false        # Relative to mean (not absolute)
   noise_seed_offset: 1000         # Ensures different noise for each image
 

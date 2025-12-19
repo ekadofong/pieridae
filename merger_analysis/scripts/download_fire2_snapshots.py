@@ -25,7 +25,8 @@ def main():
     simulations = [
         "m11d_res7100",
         "m11h_res7100",
-        "m11b_res2100"
+        "m11b_res2100",
+        'm11e_res7100'
     ]
 
     snapshots = [400, 500, 600]

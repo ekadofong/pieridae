@@ -594,7 +594,7 @@ Examples:
     parser.add_argument(
         '--config',
         type=str,
-        default='../configs/fire2_image_config.yaml',
+        default='../configs/fire2_image_with_noise.yaml',
         help='Path to configuration YAML file'
     )
     parser.add_argument(
