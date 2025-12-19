@@ -302,40 +302,31 @@ class BYOLModelManager:
 
         for epoch in tqdm(range(start_epoch, num_epochs), desc="Training BYOL"):
             try:
-                # Zero gradients before accumulation
-                optimizer.zero_grad()
-
-                # 1. Self-supervised BYOL loss
+                # Sample random batch for BYOL self-supervised learning
                 indices = np.random.permutation(len(images))[:batch_size]
                 batch = torch.tensor(
                     images[indices],
                     dtype=torch.float32
                 ).to(self.device)
 
+                # Calculate self-supervised BYOL loss
                 self_loss = self.learner(batch)
-                self_loss.backward()  # Backward immediately, frees computation graph
 
-                self_loss_value = self_loss.item()  # Save for logging
-                del batch, self_loss  # Free memory
-
-                # 2. Semi-supervised classification loss with gradient accumulation
-                super_loss_value = 0.0
+                # Semi-supervised classification loss - process ALL labeled samples
+                super_loss = 0.
                 if labeled_indices is not None and n_labeled > 0:
+                    self.learner.eval ()
+                    self.classifier.eval ()
+                    
                     # Process all labeled samples in chunks
                     n_chunks = int(np.ceil(n_labeled / supervised_chunk_size))
-                    valid_chunks = 0
+                    chunk_losses = []
 
                     for chunk_idx in range(n_chunks):
                         # Get chunk indices
                         start_idx = chunk_idx * supervised_chunk_size
                         end_idx = min((chunk_idx + 1) * supervised_chunk_size, n_labeled)
                         chunk_indices = labeled_indices[start_idx:end_idx]
-
-                        # Skip chunks with only 1 sample (batchnorm requires >1)
-                        if len(chunk_indices) < 2:
-                            continue
-
-                        valid_chunks += 1
 
                         # Load chunk images
                         chunk_batch = torch.tensor(
@@ -356,27 +347,17 @@ class BYOLModelManager:
 
                         # Cross-entropy loss for this chunk
                         chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
+                        chunk_losses.append(chunk_loss)
 
-                        # Scale by weight and number of valid chunks, then backward
-                        # We'll divide by valid_chunks after the loop, so use n_chunks estimate for now
-                        # This will be approximately correct
-                        scaled_loss = (self.config['training']['s4l_weight'] / n_chunks) * chunk_loss
-                        scaled_loss.backward()  # Gradients accumulate, graph freed immediately
+                    self.learner.train ()
+                    self.classifier.train ()
+                    # Average loss across all chunks
+                    super_loss = torch.stack(chunk_losses).mean()
 
-                        # Track loss value for logging
-                        super_loss_value += chunk_loss.item()
+                loss = self_loss + self.config['training']['s4l_weight']*super_loss
 
-                        # Free memory
-                        del representation, logits, chunk_batch, chunk_labels, chunk_loss, scaled_loss
-                        if self.device.type == 'mps':
-                            torch.mps.empty_cache()
-
-                    # Average for logging
-                    if valid_chunks > 0:
-                        super_loss_value = super_loss_value / valid_chunks
-
-                # Compute total loss value for logging
-                loss_value = self_loss_value + self.config['training']['s4l_weight'] * super_loss_value
+                optimizer.zero_grad()
+                loss.backward()
 
                 # Gradient clipping for MPS stability
                 if self.device.type == 'mps':
@@ -384,26 +365,26 @@ class BYOLModelManager:
 
                 optimizer.step()
                 self.learner.update_moving_average()
+                
 
-
-                if (loss_value > best_loss):
-                    stop += 1
+                if (loss > best_loss):
+                    stop += 1 
                     checkpoint=False
                 else:
                     checkpoint=True
                     stop = 0
 
-
+                    
                 if (epoch % 10 == 0) or stop:
                     if labels is not None:
                         self.logger.info(
-                            f"Epoch {epoch}, Total Loss: {loss_value:.4f} "
-                            f"(Self-supervised: {self_loss_value:.4f}, "
-                            f"Supervised: {super_loss_value:.4f} on {n_labeled} samples)."
+                            f"Epoch {epoch}, Total Loss: {loss.item():.4f} "
+                            f"(Self-supervised: {self_loss.item():.4f}, "
+                            f"Supervised: {super_loss.item():.4f} on {n_labeled} samples)."
                             f" Patience left: {patience_limit-stop}/{patience_limit}"
                         )
                     else:
-                        self.logger.info(f"Epoch {epoch}, Loss: {loss_value:.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
+                        self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
 
                 # Save checkpoint
                 if ((epoch + 1) % save_interval == 0) or ((epoch > 200) and checkpoint):
@@ -412,7 +393,7 @@ class BYOLModelManager:
                         'model_state_dict': self.learner.state_dict(),
                         'classifier_state_dict': self.classifier.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': loss_value,
+                        'loss': loss.item(),
                         'config': self.config,
                         'device': str(self.device)
                     }
@@ -420,8 +401,8 @@ class BYOLModelManager:
                     self.logger.info(f"Checkpoint saved at epoch {epoch}")
 
                     # If this is a best checkpoint (loss improved), save it separately
-                    if checkpoint and loss_value < best_loss:
-                        best_loss = loss_value
+                    if checkpoint and loss.item() < best_loss:
+                        best_loss = loss.item()
                         best_epoch = epoch
                         torch.save(checkpoint_dict, best_checkpoint_path)
                         self.logger.info(f"Best checkpoint saved at epoch {epoch} with loss {best_loss:.4f}")
