@@ -311,6 +311,11 @@ class BYOLModelManager:
 
                 # Calculate self-supervised BYOL loss
                 self_loss = self.learner(batch)
+                self_loss_value = self_loss.item ()
+                # Gradient accumulation for just the self-supervised loss
+                optimizer.zero_grad ()
+                self_loss.backward ()
+                
 
                 # Semi-supervised classification loss - process ALL labeled samples
                 super_loss = 0.
@@ -333,31 +338,34 @@ class BYOLModelManager:
                             images[chunk_indices],
                             dtype=torch.float32
                         ).to(self.device)
+                        with torch.set_grad_enabled(True):
+                            _, representation = self.learner(chunk_batch, return_embedding=True)
 
-                        _, representation = self.learner(chunk_batch, return_embedding=True)
+                            # Get labels for this chunk (convert 1-5 to 0-4)
+                            chunk_labels = torch.tensor(
+                                labels[chunk_indices] - 1,
+                                dtype=torch.long
+                            ).to(self.device)
 
-                        # Get labels for this chunk (convert 1-5 to 0-4)
-                        chunk_labels = torch.tensor(
-                            labels[chunk_indices] - 1,
-                            dtype=torch.long
-                        ).to(self.device)
+                            # Forward pass through classifier
+                            logits = self.classifier(representation)
 
-                        # Forward pass through classifier
-                        logits = self.classifier(representation)
-
-                        # Cross-entropy loss for this chunk
-                        chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
-                        chunk_losses.append(chunk_loss)
+                            # Cross-entropy loss for this chunk
+                            chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
+                            chunk_losses.append(chunk_loss.item())
+                        
+                        scaled_loss = (self.config['training']['s4l_weight'] / n_chunks) * chunk_loss
+                        scaled_loss.backward ()
 
                     self.learner.train ()
                     self.classifier.train ()
                     # Average loss across all chunks
-                    super_loss = torch.stack(chunk_losses).mean()
+                    super_loss_value = np.mean(chunk_losses)
 
-                loss = self_loss + self.config['training']['s4l_weight']*super_loss
+                loss_value = self_loss_value + self.config['training']['s4l_weight']*super_loss_value
 
-                optimizer.zero_grad()
-                loss.backward()
+                #optimizer.zero_grad()
+                #loss.backward()
 
                 # Gradient clipping for MPS stability
                 if self.device.type == 'mps':
@@ -367,7 +375,7 @@ class BYOLModelManager:
                 self.learner.update_moving_average()
                 
 
-                if (loss > best_loss):
+                if (loss_value > best_loss):
                     stop += 1 
                     checkpoint=False
                 else:
@@ -378,13 +386,13 @@ class BYOLModelManager:
                 if (epoch % 10 == 0) or stop:
                     if labels is not None:
                         self.logger.info(
-                            f"Epoch {epoch}, Total Loss: {loss.item():.4f} "
-                            f"(Self-supervised: {self_loss.item():.4f}, "
-                            f"Supervised: {super_loss.item():.4f} on {n_labeled} samples)."
+                            f"Epoch {epoch}, Total Loss: {loss_value:.4f} "
+                            f"(Self-supervised: {self_loss_value:.4f}, "
+                            f"Supervised: {super_loss_value:.4f} on {n_labeled} samples)."
                             f" Patience left: {patience_limit-stop}/{patience_limit}"
                         )
                     else:
-                        self.logger.info(f"Epoch {epoch}, Loss: {loss.item():.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
+                        self.logger.info(f"Epoch {epoch}, Loss: {loss_value:.4f}. Patience left: {patience_limit-stop}/{patience_limit}")
 
                 # Save checkpoint
                 if ((epoch + 1) % save_interval == 0) or ((epoch > 200) and checkpoint):
@@ -393,7 +401,7 @@ class BYOLModelManager:
                         'model_state_dict': self.learner.state_dict(),
                         'classifier_state_dict': self.classifier.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
-                        'loss': loss.item(),
+                        'loss': loss_value,
                         'config': self.config,
                         'device': str(self.device)
                     }
@@ -401,8 +409,8 @@ class BYOLModelManager:
                     self.logger.info(f"Checkpoint saved at epoch {epoch}")
 
                     # If this is a best checkpoint (loss improved), save it separately
-                    if checkpoint and loss.item() < best_loss:
-                        best_loss = loss.item()
+                    if checkpoint and loss_value < best_loss:
+                        best_loss = loss_value
                         best_epoch = epoch
                         torch.save(checkpoint_dict, best_checkpoint_path)
                         self.logger.info(f"Best checkpoint saved at epoch {epoch} with loss {best_loss:.4f}")
