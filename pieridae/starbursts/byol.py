@@ -320,8 +320,8 @@ class BYOLModelManager:
                 # Semi-supervised classification loss - process ALL labeled samples
                 super_loss = 0.
                 if labeled_indices is not None and n_labeled > 0:
-                    self.learner.eval ()
-                    self.classifier.eval ()
+                    #self.learner.eval ()
+                    #self.classifier.eval ()
                     
                     # Process all labeled samples in chunks
                     n_chunks = int(np.ceil(n_labeled / supervised_chunk_size))
@@ -338,27 +338,27 @@ class BYOLModelManager:
                             images[chunk_indices],
                             dtype=torch.float32
                         ).to(self.device)
-                        with torch.set_grad_enabled(True):
-                            _, representation = self.learner(chunk_batch, return_embedding=True)
+                        
+                        _, representation = self.learner(chunk_batch, return_embedding=True)
 
-                            # Get labels for this chunk (convert 1-5 to 0-4)
-                            chunk_labels = torch.tensor(
-                                labels[chunk_indices] - 1,
-                                dtype=torch.long
-                            ).to(self.device)
+                        # Get labels for this chunk (convert 1-5 to 0-4)
+                        chunk_labels = torch.tensor(
+                            labels[chunk_indices] - 1,
+                            dtype=torch.long
+                        ).to(self.device)
 
-                            # Forward pass through classifier
-                            logits = self.classifier(representation)
+                        # Forward pass through classifier
+                        logits = self.classifier(representation)
 
-                            # Cross-entropy loss for this chunk
-                            chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
-                            chunk_losses.append(chunk_loss.item())
+                        # Cross-entropy loss for this chunk
+                        chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
+                        chunk_losses.append(chunk_loss.item())
                         
                         scaled_loss = (self.config['training']['s4l_weight'] / n_chunks) * chunk_loss
                         scaled_loss.backward ()
 
-                    self.learner.train ()
-                    self.classifier.train ()
+                    #self.learner.train ()
+                    #self.classifier.train ()
                     # Average loss across all chunks
                     super_loss_value = np.mean(chunk_losses)
 
@@ -369,7 +369,10 @@ class BYOLModelManager:
 
                 # Gradient clipping for MPS stability
                 if self.device.type == 'mps':
-                    torch.nn.utils.clip_grad_norm_(self.learner.parameters(), max_norm=1.0)
+                    all_params = list(self.learner.parameters()) + list(self.classifier.parameters())
+                    torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+                    #torch.nn.utils.clip_grad_norm_(self.learner.parameters(), max_norm=1.0)
+                    
 
                 optimizer.step()
                 self.learner.update_moving_average()
