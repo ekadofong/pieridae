@@ -238,12 +238,16 @@ class BYOLModelManager:
 
         if self.learner is None:
             self.setup_model()
-
-        # Optimizer for both BYOL and classifier parameters
-        params = list(self.learner.parameters()) + list(self.classifier.parameters())
-        optimizer = Adam(
-            params,
+        
+        # Separate optimizers for BYOL encoder and classifier
+        # Classifier uses 10x smaller learning rate for stability
+        optimizer_encoder = Adam(
+            self.learner.parameters(),
             lr=float(self.config['training']['learning_rate'])
+        )
+        optimizer_classifier = Adam(
+            self.classifier.parameters(),
+            lr=float(self.config['training']['learning_rate']) * 0.1
         )
 
         # Setup checkpointing
@@ -260,7 +264,14 @@ class BYOLModelManager:
                     weights_only=False
                 )
                 self.learner.load_state_dict(checkpoint['model_state_dict'])
-                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+                # Load optimizer states (backward compatibility)
+                if 'optimizer_encoder_state_dict' in checkpoint:
+                    optimizer_encoder.load_state_dict(checkpoint['optimizer_encoder_state_dict'])
+                    optimizer_classifier.load_state_dict(checkpoint['optimizer_classifier_state_dict'])
+                else:
+                    # Old checkpoint format - just load into encoder optimizer
+                    optimizer_encoder.load_state_dict(checkpoint['optimizer_state_dict'])
 
                 # Load classifier if available (backward compatibility)
                 if 'classifier_state_dict' in checkpoint:
@@ -313,8 +324,9 @@ class BYOLModelManager:
                 self_loss = self.learner(batch)
                 self_loss_value = self_loss.item ()
                 # Gradient accumulation for just the self-supervised loss
-                optimizer.zero_grad ()
-                self_loss.backward ()
+                optimizer_encoder.zero_grad()
+                optimizer_classifier.zero_grad()
+                self_loss.backward()                
                 
 
                 # Semi-supervised classification loss - process ALL labeled samples
@@ -338,21 +350,21 @@ class BYOLModelManager:
                             images[chunk_indices],
                             dtype=torch.float32
                         ).to(self.device)
-                        #with torch.set_grad_enabled(True):
-                        _, representation = self.learner(chunk_batch, return_embedding=True)
+                        with torch.set_grad_enabled(True):
+                            _, representation = self.learner(chunk_batch, return_embedding=True)
 
-                        # Get labels for this chunk (convert 1-5 to 0-4)
-                        chunk_labels = torch.tensor(
-                            labels[chunk_indices] - 1,
-                            dtype=torch.long
-                        ).to(self.device)
+                            # Get labels for this chunk (convert 1-5 to 0-4)
+                            chunk_labels = torch.tensor(
+                                labels[chunk_indices] - 1,
+                                dtype=torch.long
+                            ).to(self.device)
 
-                        # Forward pass through classifier
-                        logits = self.classifier(representation)
+                            # Forward pass through classifier
+                            logits = self.classifier(representation)
 
-                        # Cross-entropy loss for this chunk
-                        chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
-                        chunk_losses.append(chunk_loss.item())
+                            # Cross-entropy loss for this chunk
+                            chunk_loss = nn.functional.cross_entropy(logits, chunk_labels)
+                            chunk_losses.append(chunk_loss.item())
                         
                         scaled_loss = (self.config['training']['s4l_weight'] / n_chunks) * chunk_loss
                         scaled_loss.backward ()
@@ -368,15 +380,18 @@ class BYOLModelManager:
                 #loss.backward()
 
                 # Gradient clipping for MPS stability
+                if labeled_indices is not None and n_labeled > 0:
+                    torch.nn.utils.clip_grad_norm_(self.classifier.parameters(), max_norm=0.5)
+                    
                 if self.device.type == 'mps':
                     all_params = list(self.learner.parameters()) + list(self.classifier.parameters())
                     torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
                     #torch.nn.utils.clip_grad_norm_(self.learner.parameters(), max_norm=1.0)
                     
 
-                optimizer.step()
-                self.learner.update_moving_average()
-                
+                optimizer_encoder.step()
+                optimizer_classifier.step()
+                self.learner.update_moving_average()                
 
                 if (loss_value > best_loss):
                     stop += 1 
@@ -403,7 +418,8 @@ class BYOLModelManager:
                         'epoch': epoch,
                         'model_state_dict': self.learner.state_dict(),
                         'classifier_state_dict': self.classifier.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
+                        'optimizer_encoder_state_dict': optimizer_encoder.state_dict(),
+                        'optimizer_classifier_state_dict': optimizer_classifier.state_dict(),
                         'loss': loss_value,
                         'config': self.config,
                         'device': str(self.device)

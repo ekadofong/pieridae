@@ -533,6 +533,16 @@ def run_training(
     logger.info("TRAINING MODE")
     logger.info("=" * 60)
 
+    # Save a copy of byol.py for reproducibility
+    import shutil
+    from datetime import datetime
+    
+    byol_source = Path(__file__).parent.parent.parent / 'pieridae' / 'starbursts' / 'byol.py'
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    byol_backup = output_path / f'byol_snapshot_{timestamp}.py'
+    shutil.copy2(byol_source, byol_backup)
+    logger.info(f"Saved byol.py snapshot to: {byol_backup}")
+
     training_labels = labels.copy()
     ndiscard = int(len(training_labels)*0.5)
     print(f'Discarding {ndiscard} labels to construct a 10% training set')
