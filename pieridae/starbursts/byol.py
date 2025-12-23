@@ -1583,7 +1583,8 @@ class SimulatedGalaxyGenerator:
 
 def load_merian_images(
     data_path: Union[str, Path],
-    logger: Optional[logging.Logger] = None,    
+    logger: Optional[logging.Logger] = None, 
+    names = None   
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load Merian galaxy images from pickle files.
@@ -1614,6 +1615,15 @@ def load_merian_images(
     data_path = Path(data_path)
     pattern = f"{data_path}/M*/*i_results.pkl"
     filenames = glob.glob(pattern)
+    if names is not None:
+        matched_filenames = []
+        for fpath in filenames:
+            name = Path(fpath).name.split("_")[0]
+            if name in names:
+                matched_filenames.append(fpath)
+        
+        logger.info(f'Found {len(matched_filenames)} target files out of {len(filenames)} requested.')
+        filenames = matched_filenames
 
     if not filenames:
         raise FileNotFoundError(f"No files found matching pattern: {pattern}")

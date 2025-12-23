@@ -4,7 +4,7 @@
 # Data paths
 data:
   input_path: ../../local_data/pieridae_output/starlet/msorabove_v1
-  output_path: ../output/fiducial
+  output_path: ../output/weaker_supervision
 
 # Model architecture
 model:
@@ -22,7 +22,7 @@ training:
   resume: false
   s4l_weight: 0.1
   patience_limit: 30
-  supervised_chunk_size: 128  # Chunk size for processing all labeled data per epoch
+  supervised_chunk_size: 32  # Chunk size for processing all labeled data per epoch
 
 # Inference parameters
 inference:
@@ -44,7 +44,7 @@ analysis:
 # Label propagation
 labels:
   # Classification file
-  classifications_file: ../../../quick_projects/vizinspect/scripts/classifications_msorabove_v0_kadofong_20251008.csv
+  classifications_file: ../../../quick_projects/vizinspect/scripts/classifications_kadofong_current.csv
   index_column: 0
 
   # K-NN label propagation
