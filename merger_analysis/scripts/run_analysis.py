@@ -43,7 +43,7 @@ from pieridae.starbursts.byol import (
 # Plotting
 try:
     import matplotlib
-    matplotlib.use('Agg')
+    #matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     PLOTTING_AVAILABLE = True
 except ImportError:

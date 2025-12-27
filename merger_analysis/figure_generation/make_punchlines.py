@@ -702,7 +702,8 @@ def load_data(config: dict, logger: logging.Logger,
         input_embeddings = embeddings_pca
 
     # Run classification
-    logger.info("Running classification...")
+    logger.info(f"Running classification on data of {input_embeddings.shape} shape...")
+    
     iterative_labels, n_labels_iter, prob_labels_iter, stats = \
         propagator.iterative_propagation(input_embeddings, labels)
 
@@ -2159,7 +2160,7 @@ def make_figure_merger_prob_vs_dsfs(
     pmerger = pmerger.reindex(data['catalog'].index)
     
     mask = data['catalog'].reindex(data['img_names'])['logmass_adjusted']<8.
-    floor = np.mean(data['mean_prob_labels'][mask,2])    
+    floor = 0.# np.mean(data['mean_prob_labels'][mask,2])    
 
     u_pmerger = pd.Series((data['std_prob_labels'][:,2]**2 + data['std_prob_labels'][:,3]**2)**0.5, index=data['img_names'])
     u_pmerger = u_pmerger.reindex(data['catalog'].index)
@@ -2194,7 +2195,7 @@ def make_figure_merger_prob_vs_dsfs(
     cmap = ec.colormap_from_list([colorlists.slides['orange'], plt.cm.coolwarm(0.5), colorlists.slides['bluebird']])
 
     axarr[0].set_xlim(-0.75, 3)
-    axarr[0].set_ylim(0., 0.45)
+    axarr[0].set_ylim(0., 0.7)
 
     
     for gidx, gid in enumerate(groupids):
@@ -3826,15 +3827,23 @@ Examples:
         if args.input_path:
             logger.info(f"Input path overridden to: {args.input_path}")
 
+
         # Create output directory
         output_dir = Path(args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Output directory: {output_dir}")
 
         # Load data
+        runtag = config['data']['output_path'].name
+        
+        reruns = [runtag]
+        ix = 0
+        while os.path.exists(Path('../output') / f'{runtag}_rerun_{ix}/embeddings.npy' ):
+            reruns.append( f'{runtag}_rerun_{ix}' ) 
+            ix += 1
         #data = load_data(config, logger)
         data = load_data_multirun(Path('../output/'),
-                                  ['fiducial'] + [ f'fiducial_rerun_{ix}' for ix in range(5)],
+                                  reruns,
                                   logger)
 
         # Generate toy model data (always, for Figure 10)
