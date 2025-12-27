@@ -142,10 +142,10 @@ class BYOLModelManager:
         """Adjust batch sizes for MPS device limitations"""
         if self.device.type == 'mps':
             original_train_batch = self.config['training']['batch_size']
-            self.config['training']['batch_size'] = min(128, original_train_batch)
+            self.config['training']['batch_size'] = min(512, original_train_batch)
 
             original_inf_batch = self.config['inference']['batch_size']
-            self.config['inference']['batch_size'] = min(128, original_inf_batch)
+            self.config['inference']['batch_size'] = min(512, original_inf_batch)
 
             if original_train_batch != self.config['training']['batch_size']:
                 self.logger.info(
@@ -336,15 +336,16 @@ class BYOLModelManager:
                     self.classifier.eval ()
                     
                     # Process all labeled samples in chunks
-                    n_chunks = int(np.ceil(n_labeled / supervised_chunk_size))
+                    n_chunks = int(np.ceil(min(n_labeled,batch_size) / supervised_chunk_size))
                     chunk_losses = []
-
+                    supervised_indices = np.random.permutation(labeled_indices)[:batch_size]
+                    #print(supervised_indices.size)
                     for chunk_idx in range(n_chunks):
                         # Get chunk indices
                         start_idx = chunk_idx * supervised_chunk_size
                         end_idx = min((chunk_idx + 1) * supervised_chunk_size, n_labeled)
-                        chunk_indices = labeled_indices[start_idx:end_idx]
-
+                        chunk_indices = supervised_indices[start_idx:end_idx]
+                        #print(chunk_indices)
                         # Load chunk images
                         chunk_batch = torch.tensor(
                             images[chunk_indices],
@@ -529,6 +530,7 @@ class BYOLModelManager:
         self,
         images: np.ndarray,
         batch_size: Optional[int] = None,
+        save=True,
     ) -> np.ndarray:
         """
         Extract embeddings from images using trained model.
@@ -589,9 +591,10 @@ class BYOLModelManager:
 
         embeddings = np.vstack(all_embeddings)
 
-        # Save embeddings
+        # Save embeddings    
         embeddings_path = self.output_path / 'embeddings.npy'
-        np.save(embeddings_path, embeddings)
+        if save:
+            np.save(embeddings_path, embeddings)
 
         self.logger.info(f"Extracted embeddings shape: {embeddings.shape}")
         return embeddings
