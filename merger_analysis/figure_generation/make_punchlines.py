@@ -1154,7 +1154,7 @@ def make_figure_classification_conflicts(
     mu_am = np.arange(len(img_names))[is_automerger & ~fragmented & manual_nonmerger]
     mm_au = np.arange(len(img_names))[~is_automerger & ~fragmented & manual_merger]
     
-    n_examples = min(n_examples, len(mu_am))
+    n_examples = min(n_examples, len(mu_am), len(mm_au))
 
     if n_examples == 0:
         logger.warning("No classification conflicts found")
@@ -1369,7 +1369,7 @@ def make_figure_ptf_chart(
     data_path = data['data_path']
 
     # Calculate p[tf] = p[ambig] + p[merger]
-    ptf = prob_labels_iter[:, 2] + prob_labels_iter[:, 3]
+    ptf = prob_labels_iter[:, 3]# + prob_labels_iter[:, 3]
 
     # For each bin, find one example galaxy (excluding fragmented)
     example_indices = []
@@ -1379,7 +1379,7 @@ def make_figure_ptf_chart(
     mass_mask = (dc['logmass_adjusted']>logmstar_min)&(dc['logmass_adjusted']<logmstar_max)
 
     # Define bins for p[tf]
-    ptf_bins = np.linspace(0., min(1.,max(ptf[mass_mask])) , 6)
+    ptf_bins = np.linspace(0., min(1.,max(ptf[mass_mask])), 7)
     n_bins = len(ptf_bins) - 1
     
     # Test it
@@ -1677,7 +1677,8 @@ def make_figure_merger_gallery(
     cutout_base_path: Optional[Path] = None,
     lupton_Q: float = 8.0,
     lupton_stretch: float = .5,
-    logmstar_max: float = 9.5
+    logmstar_max: float = 9.5,
+    logmstar_min: float = 9.
 ) -> None:
     """
     Figure: Gallery of merger candidates above a P[TF] threshold.
@@ -1740,7 +1741,8 @@ def make_figure_merger_gallery(
         (ptf > tf_thresh) &
         ~fragmented &
         (prob_labels_iter[:, 4] <= 0.2) &
-        (catalog.reindex((img_names))['logmass_adjusted'] < logmstar_max)
+        (catalog.reindex((img_names))['logmass_adjusted'] < logmstar_max) &
+        (catalog.reindex((img_names))['logmass_adjusted'] > logmstar_min)
     )
 
     candidates = np.where(valid_mask)[0]
@@ -1838,34 +1840,23 @@ def make_figure_merger_gallery(
 
             # Add P[TF] label in corner
             # Disable clipping on the axes to allow text to overflow
-            ax.set_clip_on(False)
+            ax.set_clip_on(False)            
             ek.text(
                 0.025,
                 0.975,
                 'abcdefghijklmnopqrztuvwxyz'[idx],
                 ax=ax,
-                color='k',
-                bordercolor='w',
+                color='w',
+                bordercolor='k',
                 fontsize=9
             )
 
+        
             from matplotlib import patheffects
-            txt = bx.text(
-                1.05, 0.025,
-                rf"Pr[TF]={ptf[gix]:.2f}$\pm${u_ptf[gix]:.2f}",
-                transform=ax.transAxes,
-                fontsize=9,
-                color='k',
-                ha='center',
-                va='bottom',
-                zorder=100,  # High z-order to draw on top of adjacent subplots
-                clip_on=False
-            )
-            txt.set_path_effects([patheffects.withStroke(linewidth=2, foreground='w')])
-            if output_dir is None:
+            if False:
                 txt = bx.text(
-                    1.05, 0.8,
-                    rf"{catalog.loc[img_name, 'logmass_adjusted']:.2f}",
+                    1.05, 0.025,
+                    rf"Pr[TF]={ptf[gix]:.2f}$\pm${u_ptf[gix]:.2f}",
                     transform=ax.transAxes,
                     fontsize=9,
                     color='k',
@@ -1873,7 +1864,20 @@ def make_figure_merger_gallery(
                     va='bottom',
                     zorder=100,  # High z-order to draw on top of adjacent subplots
                     clip_on=False
-                )            
+                )
+                txt.set_path_effects([patheffects.withStroke(linewidth=2, foreground='w')])
+            #if output_dir is None:
+            txt = bx.text(
+                0.05, 0.05,
+                rf"$\log_{{10}}[M_\bigstar/M_\odot]$={catalog.loc[img_name, 'logmass_adjusted']:.2f}",
+                transform=ax.transAxes,
+                fontsize=9,
+                color='k',
+                ha='left',
+                va='bottom',
+                zorder=100,  # High z-order to draw on top of adjacent subplots
+                clip_on=False
+            )            
             # Add border effect
             txt.set_path_effects([patheffects.withStroke(linewidth=2, foreground='w')])
         else:
