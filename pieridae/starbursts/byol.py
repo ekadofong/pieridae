@@ -385,7 +385,10 @@ class BYOLModelManager:
                             logits = self.classifier(representation)
 
                             # Cross-entropy loss for this chunk
-                            class_weights = torch.tensor([downsample_classone, 1., 1., 1., 1.,]).to(self.device)
+                            if downsample_classone > 1.:
+                                class_weights = torch.tensor([downsample_classone, 1., 1., 1., 1.,]).to(self.device)
+                            else:
+                                class_weights = None
                             chunk_loss = nn.functional.cross_entropy(logits, chunk_labels, weight=class_weights)
                             chunk_losses.append(chunk_loss.item())
                         
