@@ -16,13 +16,14 @@ model:
 # Training parameters
 training:
   num_epochs: 1000
-  batch_size: 1024
+  batch_size: 128
   learning_rate: 0.0003
   save_interval: 100
   resume: false
-  s4l_weight: 0.1
+  s4l_weight: 0.5
   patience_limit: 30
   supervised_chunk_size: 128  # Chunk size for processing all labeled data per epoch
+  
 
 # Inference parameters
 inference:

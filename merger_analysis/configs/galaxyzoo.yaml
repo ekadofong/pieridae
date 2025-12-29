@@ -16,11 +16,11 @@ model:
 # Training parameters
 training:
   num_epochs: 1000
-  batch_size: 1024
+  batch_size: 128
   learning_rate: 0.0003
   save_interval: 100
   resume: false
-  s4l_weight: 0.25
+  s4l_weight: 0.5
   patience_limit: 30
   supervised_chunk_size: 129  # Chunk size for processing all labeled data per epoch (257 labeled samples / 129 = 2 chunks of 129 and 128)
 
@@ -44,7 +44,7 @@ analysis:
 # Label propagation
 labels:
   # Classification file
-  classifications_file: ../local_data/galaxy_zoo_classifications/classifications.csv
+  classifications_file: ../local_data/galaxy_zoo_classifications/classifications_train.csv
   index_column: 0
 
   # Model checkpoint for FrozenClassifier (neural network-based classification)
