@@ -292,7 +292,8 @@ def run_training(
         images, 
         labels,
         resume=config['training'].get('resume', False),
-        patience_limit=config['training'].get('patience_limit', 20)
+        patience_limit=config['training'].get('patience_limit', 20),
+        downsample_classone=config['training'].get('downsample_classone', 4.)        
     )
 
     logger.info("Training complete")

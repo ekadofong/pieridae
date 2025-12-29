@@ -23,6 +23,7 @@ training:
   s4l_weight: 0.5
   patience_limit: 30
   supervised_chunk_size: 129  # Chunk size for processing all labeled data per epoch (257 labeled samples / 129 = 2 chunks of 129 and 128)
+  downsample_classone: 4
 
 
 # Inference parameters

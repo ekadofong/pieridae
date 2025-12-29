@@ -23,7 +23,7 @@ training:
   s4l_weight: 0.5
   patience_limit: 30
   supervised_chunk_size: 128  # Chunk size for processing all labeled data per epoch
-  
+  downsample_classone: 4 # downsample majority class (1)
 
 # Inference parameters
 inference:

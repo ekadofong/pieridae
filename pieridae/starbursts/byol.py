@@ -223,7 +223,7 @@ class BYOLModelManager:
         labels: np.ndarray = None,
         resume: bool = True,
         patience_limit: int = 20,
-        downsample_undisturbed: float = 4.,
+        downsample_classone: float = 4.,
     ) -> None:
         """
         Train BYOL model with checkpointing.
@@ -300,11 +300,11 @@ class BYOLModelManager:
             labeled_indices = np.where(labels > 0)[0]
             n_labeled = len(labeled_indices)
             self.logger.info(f"Found {n_labeled} labeled samples ({100*n_labeled/len(labels):.2f}% of dataset)")
-            if downsample_undisturbed>1.:
+            if downsample_classone>1.:
                 other_labeled_indices = labeled_indices[labels[labeled_indices] > 1]
                 ud_indices = labeled_indices[labels[labeled_indices] == 1]
                 ud_original_fraction = len(ud_indices) / n_labeled
-                self.logger.info(f"Downsampling (then upweighting) undisturbed IDs by a factor of {downsample_undisturbed}")    
+                self.logger.info(f"Downsampling (then upweighting) undisturbed IDs by a factor of {downsample_classone}")    
         else:
             labeled_indices = None
             n_labeled = 0
@@ -345,10 +345,10 @@ class BYOLModelManager:
                     n_chunks = int(np.ceil(min(n_labeled,batch_size) / supervised_chunk_size))
                     chunk_losses = []
                     
-                    if downsample_undisturbed > 1.:
+                    if downsample_classone > 1.:
                         #other_labeled_indices = labeled_indices[labels[labeled_indices] > 1]
                         #ud_indices = labeled_indices[labels[labeled_indices] == 1]
-                        n_pull_ud = int(batch_size * ud_original_fraction / downsample_undisturbed)
+                        n_pull_ud = int(batch_size * ud_original_fraction / downsample_classone)
                         n_pull_other = batch_size - n_pull_ud
                         supervised_indices = np.concatenate(
                             [np.random.permutation(ud_indices)[:n_pull_ud],
@@ -385,7 +385,7 @@ class BYOLModelManager:
                             logits = self.classifier(representation)
 
                             # Cross-entropy loss for this chunk
-                            class_weights = torch.tensor([downsample_undisturbed, 1., 1., 1., 1.,]).to(self.device)
+                            class_weights = torch.tensor([downsample_classone, 1., 1., 1., 1.,]).to(self.device)
                             chunk_loss = nn.functional.cross_entropy(logits, chunk_labels, weight=class_weights)
                             chunk_losses.append(chunk_loss.item())
                         
